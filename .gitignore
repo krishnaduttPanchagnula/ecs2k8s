@@ -1,0 +1,63 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+ecs2k8s
+ecs2k8s.exe
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# AWS credentials (if accidentally created)
+.aws/
+credentials
+config
+
+# Generated output directories
+my-cluster/
+*-cluster/
+
+# Logs
+*.log
+logs/
+
+# Coverage directory used by tools like gocovhtml
+cover/
+coverage/
+
+# Dependency analysis tools
+# golangci-lint
+.golangci-lint-cache/
+
+# Tools
+tools/
+
+# Environment variables
+.env
