@@ -6,6 +6,10 @@ before:
   hooks:
     - go mod tidy
     - go test ./...
+    - go test ./validators -v
+    - go test ./validators -bench=. -benchtime=1s
+    - go vet ./...
+    - go fmt ./...
 
 builds:
   - id: ecs2k8s
@@ -40,6 +44,8 @@ archives:
     files:
       - LICENSE
       - README*
+      - validators/validators.go
+      - validators/validators_test.go
 
 checksum:
   name_template: checksums.txt

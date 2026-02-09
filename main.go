@@ -9,8 +9,11 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/spf13/cobra"
+
+	"ecs2eks/validators"
 )
 
 // validAWSRegions contains all valid AWS regions
@@ -70,22 +73,27 @@ generates a Helm chart for easy deployment and management.`,
 	}
 }
 
-// validateRegion checks if the provided region is a valid AWS region
+// validateRegion checks if the provided region is a valid AWS region using validators package
 func validateRegion(region string) error {
-	if region == "" {
-		return fmt.Errorf("region cannot be empty")
+	rv := &validators.RegionValidator{Region: region}
+
+	// Validate format first
+	if err := rv.ValidateFormat(); err != nil {
+		return err
 	}
 
-	region = strings.TrimSpace(region)
-
-	if validAWSRegions[region] {
-		return nil
+	// Check against known regions (non-fatal warning if unknown)
+	if err := rv.ValidateKnownRegion(); err != nil {
+		log.Printf("Warning: %v", err)
 	}
 
-	// If not in our hardcoded list, log a warning but allow it
-	// (new regions may have been added since this was written)
-	log.Printf("Warning: Region %s is not in the known regions list. Proceeding anyway.", region)
 	return nil
+}
+
+// validateRegionWithAWS checks region with AWS API
+func validateRegionWithAWS(ctx context.Context, region string, ec2Client *ec2.Client) error {
+	rv := &validators.RegionValidator{Region: region}
+	return rv.ValidateWithAWS(ctx, ec2Client)
 }
 
 // validateAWSCredentials attempts to verify AWS credentials are configured
@@ -176,6 +184,11 @@ func runEcs2K8s(region string, createHelm bool) error {
 
 	log.Printf("Selected cluster: %s", selectedCluster)
 
+	// 2a. Validate selected cluster
+	if err := validateSelectedCluster(ctx, selectedCluster, ecsClient); err != nil {
+		return fmt.Errorf("cluster validation failed: %w", err)
+	}
+
 	// 3. Create output directory
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -212,6 +225,11 @@ func runEcs2K8s(region string, createHelm bool) error {
 			log.Printf("Warning: Empty task definition ARN encountered, skipping")
 			failureCount++
 			continue
+		}
+
+		// Validate task definition ARN before fetching
+		if err := validateTaskDefArn(ctx, taskDefArn, ecsClient); err != nil {
+			log.Printf("Warning: Task definition validation failed for %s: %v (attempting to continue)", taskDefArn, err)
 		}
 
 		taskDef, err := getTaskDefinition(ctx, ecsClient, taskDefArn)
@@ -294,4 +312,63 @@ func runEcs2K8s(region string, createHelm bool) error {
 
 	log.Printf("✅ Conversion complete!")
 	return nil
+}
+
+// validateSelectedCluster validates the selected cluster using validators package
+func validateSelectedCluster(ctx context.Context, clusterName string, ecsClient *ecs.Client) error {
+	cv := &validators.ClusterValidator{ClusterName: clusterName}
+
+	// Validate name and format
+	if err := cv.ValidateName(); err != nil {
+		return err
+	}
+
+	if err := cv.ValidateFormat(); err != nil {
+		return err
+	}
+
+	// Validate cluster exists and is active
+	if ecsClient != nil {
+		if err := cv.ValidateExists(ctx, ecsClient); err != nil {
+			return err
+		}
+
+		if err := cv.ValidateActive(ctx, ecsClient); err != nil {
+			log.Printf("Warning: Cluster status check: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// validateTaskDefArn validates task definition ARN using validators package
+func validateTaskDefArn(ctx context.Context, taskDefArn string, ecsClient *ecs.Client) error {
+	tv := &validators.TaskDefinitionValidator{TaskDefARN: taskDefArn}
+
+	// Validate name and format
+	if err := tv.ValidateName(); err != nil {
+		return err
+	}
+
+	if err := tv.ValidateARNFormat(); err != nil {
+		return err
+	}
+
+	// Validate task definition exists (optional with ECS client)
+	if ecsClient != nil {
+		if err := tv.ValidateExists(ctx, ecsClient); err != nil {
+			log.Printf("Warning: Task definition existence check: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// validateManifest validates generated Kubernetes manifest using validators package
+func validateManifest(manifestPath string, content []byte) error {
+	mv := &validators.ManifestValidator{
+		ManifestPath: manifestPath,
+		Content:      content,
+	}
+	return mv.Validate()
 }
