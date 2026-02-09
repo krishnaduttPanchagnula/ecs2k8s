@@ -98,12 +98,12 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 			Env:   envVars,
 			Resources: corev1.ResourceRequirements{
 				Limits: corev1.ResourceList{
-					"cpu":    cpuQty,
-					"memory": memoryQty,
+					corev1.ResourceCPU:    cpuQty,
+					corev1.ResourceMemory: memoryQty,
 				},
 				Requests: corev1.ResourceList{
-					"cpu":    cpuQty,
-					"memory": memoryQty,
+					corev1.ResourceCPU:    cpuQty,
+					corev1.ResourceMemory: memoryQty,
 				},
 			},
 		}
@@ -269,7 +269,7 @@ func createService(containerName string, portMappings []types.PortMapping) *core
 
 		servicePorts = append(servicePorts, corev1.ServicePort{
 			Port:       port,
-			TargetPort: *intstrHelper(port),
+			TargetPort: intstr.FromInt32(port),
 			Protocol:   corev1.ProtocolTCP,
 		})
 	}
@@ -374,14 +374,6 @@ func memoryToQuantity(memory *int32) resource.Quantity {
 	return *mib
 }
 
-// intstrHelper is a helper to convert int32 to IntOrString for ServicePort
-func intstrHelper(port int32) *intstr.IntOrString {
-	return &intstr.IntOrString{
-		Type:   intstr.Int,
-		IntVal: port,
-	}
-}
-
 // convertTaskDefToInfo converts an ECS task definition to TaskDefInfo
 func convertTaskDefToInfo(taskDef *types.TaskDefinition, taskDefName string) (*TaskDefInfo, error) {
 	if taskDef == nil {
@@ -444,7 +436,7 @@ func convertTaskDefToInfo(taskDef *types.TaskDefinition, taskDefName string) (*T
 		taskDefInfo.Containers = append(taskDefInfo.Containers, containerConfig)
 	}
 
-	if taskDef.ContainerDefinitions[0].Image != nil {
+	if len(taskDef.ContainerDefinitions) > 0 && taskDef.ContainerDefinitions[0].Image != nil {
 		taskDefInfo.Image = *taskDef.ContainerDefinitions[0].Image
 	}
 

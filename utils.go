@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"gopkg.in/yaml.v3"
 )
 
@@ -71,6 +72,106 @@ func isValidFilename(name string) bool {
 	}
 
 	return true
+}
+
+// serializePodSpec converts a PodSpec to a map suitable for YAML marshaling
+func serializePodSpec(podSpec *corev1.PodSpec) map[string]interface{} {
+	result := map[string]interface{}{}
+
+	if podSpec == nil {
+		return result
+	}
+
+	if len(podSpec.Containers) > 0 {
+		var containersList []map[string]interface{}
+		for _, container := range podSpec.Containers {
+			containerMap := map[string]interface{}{
+				"name":  container.Name,
+				"image": container.Image,
+			}
+
+			// Add ports if present
+			if len(container.Ports) > 0 {
+				var portsList []map[string]interface{}
+				for _, port := range container.Ports {
+					portMap := map[string]interface{}{
+						"containerPort": port.ContainerPort,
+					}
+					if port.Protocol != "" {
+						portMap["protocol"] = string(port.Protocol)
+					}
+					if port.Name != "" {
+						portMap["name"] = port.Name
+					}
+					portsList = append(portsList, portMap)
+				}
+				containerMap["ports"] = portsList
+			}
+
+			// Add environment variables if present
+			if len(container.Env) > 0 {
+				var envList []map[string]interface{}
+				for _, env := range container.Env {
+					envMap := map[string]interface{}{
+						"name": env.Name,
+					}
+					if env.Value != "" {
+						envMap["value"] = env.Value
+					}
+					envList = append(envList, envMap)
+				}
+				containerMap["env"] = envList
+			}
+
+			// Add resources with proper string formatting
+			if len(container.Resources.Limits) > 0 || len(container.Resources.Requests) > 0 {
+				resourcesMap := map[string]interface{}{}
+
+				// Add limits
+				if len(container.Resources.Limits) > 0 {
+					limitsMap := make(map[string]string)
+					for k, v := range container.Resources.Limits {
+						limitsMap[string(k)] = v.String()
+					}
+					resourcesMap["limits"] = limitsMap
+				}
+
+				// Add requests
+				if len(container.Resources.Requests) > 0 {
+					requestsMap := make(map[string]string)
+					for k, v := range container.Resources.Requests {
+						requestsMap[string(k)] = v.String()
+					}
+					resourcesMap["requests"] = requestsMap
+				}
+
+				containerMap["resources"] = resourcesMap
+			}
+
+			containersList = append(containersList, containerMap)
+		}
+		result["containers"] = containersList
+	}
+
+	// Add init containers if present
+	if len(podSpec.InitContainers) > 0 {
+		var initContainersList []map[string]interface{}
+		for _, container := range podSpec.InitContainers {
+			containerMap := map[string]interface{}{
+				"name":  container.Name,
+				"image": container.Image,
+			}
+			initContainersList = append(initContainersList, containerMap)
+		}
+		result["initContainers"] = initContainersList
+	}
+
+	// Add restart policy if specified
+	if podSpec.RestartPolicy != "" {
+		result["restartPolicy"] = string(podSpec.RestartPolicy)
+	}
+
+	return result
 }
 
 func writeManifests(outputDir, taskDefName string, manifests K8sManifests) error {
@@ -138,7 +239,7 @@ func writeManifests(outputDir, taskDefName string, manifests K8sManifests) error
 							"app": taskDefName,
 						},
 					},
-					"spec": manifests.Deployment,
+					"spec": serializePodSpec(manifests.Deployment),
 				},
 			},
 		}
