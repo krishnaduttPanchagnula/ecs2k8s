@@ -12,11 +12,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// ContainerResources tracks resource requirements for a container
+type ContainerResources struct {
+	Name   string
+	CPU    string
+	Memory string
+	Ports  []int32
+}
+
 type K8sManifests struct {
 	Deployment *corev1.PodSpec   `json:"deployment,omitempty"`
-	ConfigMap  *corev1.ConfigMap `json:"configmap,omitempty"`
-	Secret     *corev1.Secret    `json:"secret,omitempty"`
-	Service    *corev1.Service   `json:"service,omitempty"`
+	ConfigMaps []*corev1.ConfigMap `json:"configmaps,omitempty"`
+	Secrets    []*corev1.Secret    `json:"secrets,omitempty"`
+	Services   []*corev1.Service   `json:"services,omitempty"`
+	Containers []ContainerResources `json:"containers,omitempty"`
 }
 
 func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
@@ -26,13 +35,15 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 		return manifests, fmt.Errorf("no container definitions found")
 	}
 
-	// Log warning if multiple containers exist
+	// Log info about container count
 	if len(taskDef.ContainerDefinitions) > 1 {
-		log.Printf("Warning: Task definition has %d containers, converting all", len(taskDef.ContainerDefinitions))
+		log.Printf("Info: Task definition has %d containers, converting all", len(taskDef.ContainerDefinitions))
 	}
 
 	var containers []corev1.Container
+	var containerResources []ContainerResources
 	var configMaps []*corev1.ConfigMap
+	var secrets []*corev1.Secret
 	var services []*corev1.Service
 
 	for i, container := range taskDef.ContainerDefinitions {
@@ -46,30 +57,64 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 			continue
 		}
 
+		containerName := *container.Name
+
+		// Convert ports
+		ports := convertPorts(container.PortMappings)
+
+		// Convert environment variables
+		envVars := convertEnvVars(container.Environment)
+
+		// Convert resources
+		cpuQty := cpuToQuantity(container.Cpu)
+		memoryQty := memoryToQuantity(container.Memory)
+
+		// Create container spec
 		c := corev1.Container{
-			Name:  *container.Name,
+			Name:  containerName,
 			Image: *container.Image,
-			Ports: convertPorts(container.PortMappings),
-			Env:   convertEnvVars(container.Environment),
+			Ports: ports,
+			Env:   envVars,
 			Resources: corev1.ResourceRequirements{
 				Limits: corev1.ResourceList{
-					"cpu":    cpuToQuantity(&container.Cpu),
-					"memory": memoryToQuantity(container.Memory),
+					"cpu":    cpuQty,
+					"memory": memoryQty,
+				},
+				Requests: corev1.ResourceList{
+					"cpu":    cpuQty,
+					"memory": memoryQty,
 				},
 			},
 		}
 		containers = append(containers, c)
 
-		// Create ConfigMap for this container
-		cm := createConfigMap(*container.Name, container.Environment)
-		if cm != nil {
+		// Track container resources for Helm values
+		portList := make([]int32, 0)
+		for _, p := range ports {
+			portList = append(portList, p.ContainerPort)
+		}
+
+		resources := ContainerResources{
+			Name:   containerName,
+			CPU:    cpuQty.String(),
+			Memory: memoryQty.String(),
+			Ports:  portList,
+		}
+		containerResources = append(containerResources, resources)
+
+		// Create ConfigMap for non-sensitive env vars
+		if cm := createConfigMap(containerName, container.Environment); cm != nil {
 			configMaps = append(configMaps, cm)
+		}
+
+		// Create Secret for AWS/sensitive env vars
+		if secret := createSecret(containerName, container.Environment); secret != nil {
+			secrets = append(secrets, secret)
 		}
 
 		// Create Service for this container if it has port mappings
 		if len(container.PortMappings) > 0 {
-			svc := createService(*container.Name, container.PortMappings)
-			if svc != nil {
+			if svc := createService(containerName, container.PortMappings); svc != nil {
 				services = append(services, svc)
 			}
 		}
@@ -79,21 +124,15 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 		return manifests, fmt.Errorf("no valid containers to convert")
 	}
 
-	// Deployment / PodSpec
+	// Create PodSpec with all containers
 	podSpec := &corev1.PodSpec{
 		Containers: containers,
 	}
 	manifests.Deployment = podSpec
-
-	// Use the first ConfigMap if available
-	if len(configMaps) > 0 {
-		manifests.ConfigMap = configMaps[0]
-	}
-
-	// Use the first Service if available
-	if len(services) > 0 {
-		manifests.Service = services[0]
-	}
+	manifests.ConfigMaps = configMaps
+	manifests.Secrets = secrets
+	manifests.Services = services
+	manifests.Containers = containerResources
 
 	return manifests, nil
 }
@@ -116,8 +155,8 @@ func createConfigMap(containerName string, envVars []types.KeyValuePair) *corev1
 			continue
 		}
 
-		// Skip AWS secrets
-		if !strings.HasPrefix(*env.Name, "AWS") {
+		// Include non-sensitive env vars (exclude AWS and common secret prefixes)
+		if !isSecretEnvVar(*env.Name) {
 			configMap.Data[*env.Name] = *env.Value
 		}
 	}
@@ -126,8 +165,60 @@ func createConfigMap(containerName string, envVars []types.KeyValuePair) *corev1
 		return configMap
 	}
 
-	log.Printf("Info: No non-AWS environment variables to include in ConfigMap for %s", containerName)
+	log.Printf("Info: No non-sensitive environment variables to include in ConfigMap for %s", containerName)
 	return nil
+}
+
+func createSecret(containerName string, envVars []types.KeyValuePair) *corev1.Secret {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("%s-secret", containerName),
+		},
+		Type: corev1.SecretTypeOpaque,
+		StringData: make(map[string]string),
+	}
+
+	for _, env := range envVars {
+		if env.Name == nil || *env.Name == "" {
+			continue
+		}
+		if env.Value == nil {
+			continue
+		}
+
+		// Include sensitive/AWS env vars
+		if isSecretEnvVar(*env.Name) {
+			secret.StringData[*env.Name] = *env.Value
+		}
+	}
+
+	if len(secret.StringData) > 0 {
+		return secret
+	}
+
+	log.Printf("Info: No sensitive environment variables to include in Secret for %s", containerName)
+	return nil
+}
+
+func isSecretEnvVar(name string) bool {
+	secretPrefixes := []string{
+		"AWS",
+		"SECRET",
+		"PASSWORD",
+		"TOKEN",
+		"KEY",
+		"PRIVATE",
+		"ACCESS",
+		"AUTH",
+		"CERT",
+	}
+
+	for _, prefix := range secretPrefixes {
+		if strings.HasPrefix(strings.ToUpper(name), prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func createService(containerName string, portMappings []types.PortMapping) *corev1.Service {
@@ -135,14 +226,35 @@ func createService(containerName string, portMappings []types.PortMapping) *core
 		return nil
 	}
 
-	// Get the first valid port
-	var servicePort int32 = 8080 // Default
+	// Collect all valid ports
+	var servicePorts []corev1.ServicePort
+	var primaryPort int32 = 8080
 
-	for _, pm := range portMappings {
-		if pm.ContainerPort != nil && *pm.ContainerPort > 0 && *pm.ContainerPort <= 65535 {
-			servicePort = *pm.ContainerPort
-			break
+	for i, pm := range portMappings {
+		if pm.ContainerPort == nil {
+			continue
 		}
+
+		port := *pm.ContainerPort
+		if port < 1 || port > 65535 {
+			log.Printf("Warning: Invalid port number %d for container %s, skipping", port, containerName)
+			continue
+		}
+
+		// Use first valid port as primary
+		if i == 0 || primaryPort == 8080 {
+			primaryPort = port
+		}
+
+		servicePorts = append(servicePorts, corev1.ServicePort{
+			Port:       port,
+			TargetPort: intstr(port),
+			Protocol:   corev1.ProtocolTCP,
+		})
+	}
+
+	if len(servicePorts) == 0 {
+		return nil
 	}
 
 	service := &corev1.Service{
@@ -153,9 +265,8 @@ func createService(containerName string, portMappings []types.PortMapping) *core
 			Selector: map[string]string{
 				"app": containerName,
 			},
-			Ports: []corev1.ServicePort{{
-				Port: servicePort,
-			}},
+			Ports: servicePorts,
+			Type:  corev1.ServiceTypeClusterIP,
 		},
 	}
 
@@ -210,14 +321,16 @@ func cpuToQuantity(cpu *int32) resource.Quantity {
 		return resource.MustParse("100m")
 	}
 
-	// Cap at reasonable maximum (e.g., 16 cores = 16000 millicores)
-	if *cpu > 16000 {
-		log.Printf("Warning: CPU value %d exceeds reasonable maximum (16000m), capping at 16000m", *cpu)
+	cpuVal := *cpu
+
+	// Cap at reasonable maximum (16 cores = 16000 millicores)
+	if cpuVal > 16000 {
+		log.Printf("Warning: CPU value %d exceeds reasonable maximum (16000m), capping at 16000m", cpuVal)
 		return resource.MustParse("16000m")
 	}
 
-	// ECS: 1 CPU unit = 1024 millicores (Kubernetes cores)
-	cores := resource.NewMilliQuantity(int64(*cpu), resource.DecimalSI)
+	// ECS CPU units directly map to millicores
+	cores := resource.NewMilliQuantity(int64(cpuVal), resource.DecimalSI)
 	return *cores
 }
 
@@ -227,13 +340,23 @@ func memoryToQuantity(memory *int32) resource.Quantity {
 		return resource.MustParse("128Mi")
 	}
 
-	// Cap at reasonable maximum (e.g., 256GB = 262144 MB)
-	if *memory > 262144 {
-		log.Printf("Warning: Memory value %d exceeds reasonable maximum (256Gi), capping at 256Gi", *memory)
+	memVal := *memory
+
+	// Cap at reasonable maximum (256GB)
+	if memVal > 262144 {
+		log.Printf("Warning: Memory value %d exceeds reasonable maximum (262144 MB = 256GB), capping at 256Gi", memVal)
 		return resource.MustParse("256Gi")
 	}
 
-	// ECS Memory is in MB, Kubernetes uses MiB (very close, safe conversion)
-	mib := resource.NewQuantity(int64(*memory)*1024*1024, resource.BinarySI)
+	// ECS Memory is in MB, Kubernetes uses MiB
+	mib := resource.NewQuantity(int64(memVal)*1024*1024, resource.BinarySI)
 	return *mib
+}
+
+// intstr is a helper to convert int32 to IntOrString for ServicePort
+func intstr(port int32) *corev1.IntOrString {
+	return &corev1.IntOrString{
+		Type:   corev1.IntstrInt,
+		IntVal: port,
+	}
 }

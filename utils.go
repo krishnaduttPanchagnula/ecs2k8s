@@ -147,16 +147,52 @@ func writeManifests(outputDir, taskDefName string, manifests K8sManifests) error
 		log.Printf("[DEBUG] Deployment is nil!")
 	}
 
-	// ConfigMap
-	if manifests.ConfigMap != nil {
-		log.Printf("[DEBUG] Adding configmap manifest")
-		files[fmt.Sprintf("%s-configmap.yaml", taskDefName)] = manifests.ConfigMap
+	// ConfigMaps - support multiple containers
+	if len(manifests.ConfigMaps) > 0 {
+		log.Printf("[DEBUG] Adding %d configmap manifest(s)", len(manifests.ConfigMaps))
+		for i, cm := range manifests.ConfigMaps {
+			if cm == nil {
+				continue
+			}
+			if len(manifests.ConfigMaps) == 1 {
+				files[fmt.Sprintf("%s-configmap.yaml", taskDefName)] = cm
+			} else {
+				// For multiple containers, create separate configmaps with container name
+				files[fmt.Sprintf("%s-configmap-%d.yaml", taskDefName, i)] = cm
+			}
+		}
 	}
 
-	// Service
-	if manifests.Service != nil {
-		log.Printf("[DEBUG] Adding service manifest")
-		files[fmt.Sprintf("%s-service.yaml", taskDefName)] = manifests.Service
+	// Services - support multiple containers
+	if len(manifests.Services) > 0 {
+		log.Printf("[DEBUG] Adding %d service manifest(s)", len(manifests.Services))
+		for i, svc := range manifests.Services {
+			if svc == nil {
+				continue
+			}
+			if len(manifests.Services) == 1 {
+				files[fmt.Sprintf("%s-service.yaml", taskDefName)] = svc
+			} else {
+				// For multiple containers, create separate services with container name
+				files[fmt.Sprintf("%s-service-%s.yaml", taskDefName, svc.Name)] = svc
+			}
+		}
+	}
+
+	// Secrets - support multiple containers
+	if len(manifests.Secrets) > 0 {
+		log.Printf("[DEBUG] Adding %d secret manifest(s)", len(manifests.Secrets))
+		for i, secret := range manifests.Secrets {
+			if secret == nil {
+				continue
+			}
+			if len(manifests.Secrets) == 1 {
+				files[fmt.Sprintf("%s-secret.yaml", taskDefName)] = secret
+			} else {
+				// For multiple containers, create separate secrets with container name
+				files[fmt.Sprintf("%s-secret-%d.yaml", taskDefName, i)] = secret
+			}
+		}
 	}
 
 	log.Printf("[DEBUG] Total files to write: %d", len(files))

@@ -39,17 +39,27 @@ func main() {
 		Use:   "ecs2k8s",
 		Short: "Convert AWS ECS task definitions to Kubernetes manifests",
 		Long: `ecs2k8s converts AWS ECS clusters and task definitions into equivalent
-Kubernetes manifests (Deployment, Service, ConfigMap, Secret).`,
+Kubernetes manifests (Deployment, Service, ConfigMap, Secret) and optionally
+generates a Helm chart for easy deployment and management.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			region, _ := cmd.Flags().GetString("region")
 			if region == "" {
 				return fmt.Errorf("region flag is required")
 			}
-			return runEcs2K8s(region)
+
+			if err := validateRegion(region); err != nil {
+				return err
+			}
+
+			createHelm, _ := cmd.Flags().GetBool("create-helm")
+
+			return runEcs2K8s(region, createHelm)
 		},
 	}
 
 	rootCmd.Flags().StringP("region", "r", "", "AWS region (required)")
+	rootCmd.Flags().BoolP("create-helm", "H", false, "Create Helm chart (default: false)")
+
 	err := rootCmd.MarkFlagRequired("region")
 	if err != nil {
 		log.Fatalf("Failed to mark flag as required: %v", err)
@@ -79,12 +89,10 @@ func validateRegion(region string) error {
 }
 
 // validateAWSCredentials attempts to verify AWS credentials are configured
-func validateAWSCredentials(ctx context.Context, cfg *config.Config) error {
-	ecsClient := ecs.NewFromConfig(*cfg)
-
+func validateAWSCredentials(ctx context.Context, client *ecs.Client) error {
 	// Try a simple API call with invalid cluster to verify credentials
 	// If credentials are missing, this will return an auth error
-	_, err := ecsClient.ListClusters(ctx, &ecs.ListClustersInput{})
+	_, err := client.ListClusters(ctx, &ecs.ListClustersInput{})
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "NoCredentialProviders") ||
@@ -99,8 +107,8 @@ func validateAWSCredentials(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
-// ensureOutputDir creates the output directory if it doesn't exist
-func ensureOutputDir(outputDir string) error {
+// createOutputDirectory creates the output directory with proper error handling
+func createOutputDirectory(outputDir string) error {
 	if outputDir == "" {
 		return fmt.Errorf("output directory path cannot be empty")
 	}
@@ -110,44 +118,31 @@ func ensureOutputDir(outputDir string) error {
 	if err == nil {
 		// Directory exists
 		if !info.IsDir() {
-			return fmt.Errorf("output path %s exists but is not a directory", outputDir)
+			return fmt.Errorf("path exists but is not a directory: %s", outputDir)
 		}
-
-		// Check if writable
-		testFile := filepath.Join(outputDir, ".write_test")
-		if err := os.WriteFile(testFile, []byte("test"), 0o644); err != nil {
-			return fmt.Errorf("output directory %s is not writable: %w", outputDir, err)
-		}
-		if err := os.Remove(testFile); err != nil {
-			log.Printf("Warning: Failed to remove test file: %v", err)
-		}
-
-		log.Printf("Using existing output directory: %s", outputDir)
+		log.Printf("Output directory already exists: %s", outputDir)
 		return nil
 	}
 
-	// Directory doesn't exist, create it
 	if !os.IsNotExist(err) {
-		return fmt.Errorf("failed to check output directory: %w", err)
+		// Some other error occurred
+		return fmt.Errorf("failed to stat output directory: %w", err)
 	}
 
-	log.Printf("Creating output directory: %s", outputDir)
+	// Directory doesn't exist, create it
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create output directory %s: %w", outputDir, err)
 	}
 
+	log.Printf("Created output directory: %s", outputDir)
 	return nil
 }
 
-func runEcs2K8s(region string) error {
+func runEcs2K8s(region string, createHelm bool) error {
 	ctx := context.Background()
 
-	// Validate region
-	if err := validateRegion(region); err != nil {
-		return err
-	}
-
 	log.Printf("Loading AWS configuration for region: %s", region)
+	log.Printf("Create Helm chart: %v", createHelm)
 
 	// Load AWS config
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
@@ -155,14 +150,14 @@ func runEcs2K8s(region string) error {
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Validate AWS credentials
-	log.Printf("Validating AWS credentials...")
-	if err := validateAWSCredentials(ctx, &cfg); err != nil {
-		return err
-	}
-
 	// Create ECS client
 	ecsClient := ecs.NewFromConfig(cfg)
+
+	// Validate AWS credentials
+	log.Printf("Validating AWS credentials...")
+	if err := validateAWSCredentials(ctx, ecsClient); err != nil {
+		return err
+	}
 
 	// 1. Discover ECS clusters
 	log.Printf("Discovering ECS clusters in region %s...", region)
@@ -190,7 +185,7 @@ func runEcs2K8s(region string) error {
 	outputDir := filepath.Join(cwd, selectedCluster)
 	log.Printf("Output directory: %s", outputDir)
 
-	if err := ensureOutputDir(outputDir); err != nil {
+	if err := createOutputDirectory(outputDir); err != nil {
 		return err
 	}
 
@@ -210,11 +205,40 @@ func runEcs2K8s(region string) error {
 
 	successCount := 0
 	failureCount := 0
+	var taskDefInfos []*TaskDefInfo
 
 	for _, taskDefArn := range taskDefs {
+		if taskDefArn == "" {
+			log.Printf("Warning: Empty task definition ARN encountered, skipping")
+			failureCount++
+			continue
+		}
+
 		taskDef, err := getTaskDefinition(ctx, ecsClient, taskDefArn)
 		if err != nil {
 			log.Printf("Error: Failed to get task definition %s: %v", taskDefArn, err)
+			failureCount++
+			continue
+		}
+
+		if taskDef == nil {
+			log.Printf("Error: Task definition %s is nil", taskDefArn)
+			failureCount++
+			continue
+		}
+
+		// Extract task definition name
+		taskDefName := extractTaskDefName(taskDefArn)
+		if taskDefName == "" {
+			log.Printf("Error: Could not extract task definition name from ARN: %s", taskDefArn)
+			failureCount++
+			continue
+		}
+
+		// Convert to TaskDefInfo for Helm support
+		taskDefInfo, err := convertTaskDefToInfo(taskDef, taskDefName)
+		if err != nil {
+			log.Printf("Error: Failed to convert task definition %s to info: %v", taskDefName, err)
 			failureCount++
 			continue
 		}
@@ -227,20 +251,25 @@ func runEcs2K8s(region string) error {
 			continue
 		}
 
-		// Write manifests to files
-		taskDefName := extractTaskDefName(taskDefArn)
-		if taskDefName == "" {
-			log.Printf("Error: Could not extract task definition name from ARN: %s", taskDefArn)
-			failureCount++
-			continue
-		}
+		taskDefInfo.Manifests = manifests
 
+		// Write manifests to files
 		if err := writeManifests(outputDir, taskDefName, manifests); err != nil {
 			log.Printf("Error: Failed to write manifests for %s: %v", taskDefName, err)
 			failureCount++
 		} else {
 			log.Printf("✓ Generated manifests for %s", taskDefName)
 			successCount++
+			taskDefInfos = append(taskDefInfos, taskDefInfo)
+		}
+	}
+
+	// 5. Create Helm chart if requested
+	if createHelm && len(taskDefInfos) > 0 {
+		log.Printf("Creating Helm chart for cluster: %s", selectedCluster)
+		if err := CreateHelmChart(selectedCluster, taskDefInfos, outputDir); err != nil {
+			log.Printf("Error: Failed to create Helm chart: %v", err)
+			return err
 		}
 	}
 
@@ -252,6 +281,9 @@ func runEcs2K8s(region string) error {
 	log.Printf("Successfully converted: %d task definition(s)", successCount)
 	log.Printf("Failed: %d task definition(s)", failureCount)
 	log.Printf("Output directory: %s", outputDir)
+	if createHelm {
+		log.Printf("Helm chart: %s-helm-chart", selectedCluster)
+	}
 	log.Printf("========================================\n")
 
 	if successCount == 0 {
