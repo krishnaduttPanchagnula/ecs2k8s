@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
@@ -24,6 +25,10 @@ func listClusters(ctx context.Context, client *ecs.Client) ([]string, error) {
 		}
 		for _, arn := range page.ClusterArns {
 			clusterName := extractClusterName(arn)
+			if clusterName == "" {
+				log.Printf("Warning: Failed to extract cluster name from ARN: %s", arn)
+				continue
+			}
 			clusters = append(clusters, clusterName)
 		}
 	}
@@ -36,6 +41,10 @@ func listClusters(ctx context.Context, client *ecs.Client) ([]string, error) {
 }
 
 func selectCluster(clusters []string) (string, error) {
+	if len(clusters) == 0 {
+		return "", fmt.Errorf("no clusters available to select")
+	}
+
 	prompt := promptui.Select{
 		Label: "Select ECS cluster",
 		Items: clusters,
@@ -47,7 +56,15 @@ func selectCluster(clusters []string) (string, error) {
 	}
 
 	_, clusterName, err := prompt.Run()
-	return clusterName, err
+	if err != nil {
+		return "", fmt.Errorf("cluster selection failed: %w", err)
+	}
+
+	if clusterName == "" {
+		return "", fmt.Errorf("selected cluster name is empty")
+	}
+
+	return clusterName, nil
 }
 
 // listTaskDefinitions lists the task definition ARNs that are actually used
@@ -55,6 +72,10 @@ func selectCluster(clusters []string) (string, error) {
 // describes those services and collects their TaskDefinition ARNs, returning
 // a deduplicated list.
 func listTaskDefinitions(ctx context.Context, client *ecs.Client, clusterName string) ([]string, error) {
+	if clusterName == "" {
+		return nil, fmt.Errorf("cluster name cannot be empty")
+	}
+
 	// 1) List services in the cluster
 	var serviceArns []string
 	listInput := &ecs.ListServicesInput{
@@ -66,13 +87,14 @@ func listTaskDefinitions(ctx context.Context, client *ecs.Client, clusterName st
 	for svcPaginator.HasMorePages() {
 		page, err := svcPaginator.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to list services: %w", err)
 		}
 		serviceArns = append(serviceArns, page.ServiceArns...)
 	}
 
 	if len(serviceArns) == 0 {
-		return nil, fmt.Errorf("no services found in cluster %s", clusterName)
+		log.Printf("Info: No services found in cluster %s (cluster may be empty)", clusterName)
+		return []string{}, nil
 	}
 
 	// 2) Describe services in batches and collect TaskDefinition ARNs
@@ -92,39 +114,61 @@ func listTaskDefinitions(ctx context.Context, client *ecs.Client, clusterName st
 
 		descOutput, err := client.DescribeServices(ctx, descInput)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to describe services: %w", err)
 		}
 
-		for _, svc := range descOutput.Services {
-			if svc.TaskDefinition != nil && *svc.TaskDefinition != "" {
-				taskDefSet[*svc.TaskDefinition] = struct{}{}
+		// Handle service description failures
+		if len(descOutput.Failures) > 0 {
+			for _, failure := range descOutput.Failures {
+				log.Printf("Warning: Failed to describe service %s: %s",
+					aws.ToString(failure.Arn),
+					aws.ToString(failure.Reason))
 			}
 		}
 
-		// Note: if there are failures, you can inspect descOutput.Failures to log or handle them.
+		for _, svc := range descOutput.Services {
+			if svc.TaskDefinition == nil || *svc.TaskDefinition == "" {
+				log.Printf("Warning: Service %s has empty task definition", aws.ToString(svc.ServiceArn))
+				continue
+			}
+			taskDefSet[*svc.TaskDefinition] = struct{}{}
+		}
 	}
 
 	// 3) Convert set to slice
 	var taskDefs []string
 	for arn := range taskDefSet {
+		if arn == "" {
+			log.Printf("Warning: Empty task definition ARN found in set, skipping")
+			continue
+		}
 		taskDefs = append(taskDefs, arn)
 	}
 
 	if len(taskDefs) == 0 {
-		return nil, fmt.Errorf("no task definitions found for services in cluster %s", clusterName)
+		log.Printf("Warning: No task definitions found for services in cluster %s", clusterName)
+		return []string{}, nil
 	}
 
 	return taskDefs, nil
 }
 
 func getTaskDefinition(ctx context.Context, client *ecs.Client, taskDefArn string) (*types.TaskDefinition, error) {
+	if taskDefArn == "" {
+		return nil, fmt.Errorf("task definition ARN cannot be empty")
+	}
+
 	input := &ecs.DescribeTaskDefinitionInput{
 		TaskDefinition: aws.String(taskDefArn),
 	}
 
 	output, err := client.DescribeTaskDefinition(ctx, input)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to describe task definition %s: %w", taskDefArn, err)
+	}
+
+	if output.TaskDefinition == nil {
+		return nil, fmt.Errorf("task definition %s returned nil from AWS API", taskDefArn)
 	}
 
 	return output.TaskDefinition, nil
