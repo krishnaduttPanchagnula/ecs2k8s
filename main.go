@@ -1,4 +1,3 @@
-// main.go
 package main
 
 import (
@@ -32,7 +31,6 @@ Kubernetes manifests (Deployment, Service, ConfigMap, Secret).`,
 	err := rootCmd.MarkFlagRequired("region")
 	if err != nil {
 		return
-
 	}
 
 	if err := rootCmd.Execute(); err != nil {
@@ -66,9 +64,15 @@ func runEcs2K8s(region string) error {
 
 	fmt.Printf("Selected cluster: %s\n", selectedCluster)
 
-	// 3. Create output directory
-	outputDir := filepath.Join(".", selectedCluster)
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	// 3. Create output directory (use absolute path)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current working directory: %w", err)
+	}
+	outputDir := filepath.Join(cwd, selectedCluster)
+	fmt.Printf("[DEBUG] Output directory: %s\n", outputDir)
+
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
