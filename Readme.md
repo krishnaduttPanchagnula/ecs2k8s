@@ -129,6 +129,7 @@ golangci-lint run
 - [ ] Volume/PVC conversion
 - [ ] HPA autoscaling manifests
 
+
 ## 📄 License
 
 MIT License - see [LICENSE](LICENSE) © 2026
