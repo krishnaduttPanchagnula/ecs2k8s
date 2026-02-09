@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -41,15 +42,9 @@ type ChartYAML struct {
 func createHelmChart(clusterName string, taskDefInfos []*TaskDefInfo, outputDir string) error {
 	if !strings.Contains(outputDir, clusterName) {
 		outputDir = filepath.Join(outputDir, clusterName)
-	// Create helm folder in current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get current working directory: %w", err)
 	}
 
 	helmChartPath := filepath.Join(outputDir, "helm", clusterName)
-	helmRootPath := filepath.Join(cwd, "helm")
-	helmChartPath := filepath.Join(helmRootPath, clusterName)
 
 	// Create directory structure
 	directories := []string{
