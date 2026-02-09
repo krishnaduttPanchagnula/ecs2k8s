@@ -1,11 +1,9 @@
 package main
-
 import (
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,34 +16,40 @@ type HelmChart struct {
 
 // HelmValues represents the values.yaml structure for the Helm chart
 type HelmValues struct {
-	Namespace string `yaml:"namespace"`
-	Replicas  int    `yaml:"replicas"`
-	Image     map[string]interface{} `yaml:"image"`
-	Resources map[string]interface{} `yaml:"resources"`
-	Service   map[string]interface{} `yaml:"service"`
-	Containers []map[string]interface{} `yaml:"containers"`
-	Environment map[string]string `yaml:"environment"`
+	Namespace   string                   `yaml:"namespace"`
+	Replicas    int                      `yaml:"replicas"`
+	Image       map[string]interface{}   `yaml:"image"`
+	Resources   map[string]interface{}   `yaml:"resources"`
+	Service     map[string]interface{}   `yaml:"service"`
+	Containers  []map[string]interface{} `yaml:"containers"`
+	Environment map[string]string        `yaml:"environment"`
 }
 
 // ChartYAML represents Chart.yaml for Helm
 type ChartYAML struct {
-	APIVersion  string `yaml:"apiVersion"`
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Type        string `yaml:"type"`
-	Version     string `yaml:"version"`
-	AppVersion  string `yaml:"appVersion"`
+	APIVersion  string              `yaml:"apiVersion"`
+	Name        string              `yaml:"name"`
+	Description string              `yaml:"description"`
+	Type        string              `yaml:"type"`
+	Version     string              `yaml:"version"`
+	AppVersion  string              `yaml:"appVersion"`
 	Maintainers []map[string]string `yaml:"maintainers,omitempty"`
-	Keywords    []string `yaml:"keywords,omitempty"`
+	Keywords    []string            `yaml:"keywords,omitempty"`
 }
 
 // createHelmChart creates a Helm chart from the task definition
 func createHelmChart(clusterName string, taskDefInfos []*TaskDefInfo, outputDir string) error {
 	if !strings.Contains(outputDir, clusterName) {
 		outputDir = filepath.Join(outputDir, clusterName)
+	// Create helm folder in current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current working directory: %w", err)
 	}
 
 	helmChartPath := filepath.Join(outputDir, "helm", clusterName)
+	helmRootPath := filepath.Join(cwd, "helm")
+	helmChartPath := filepath.Join(helmRootPath, clusterName)
 
 	// Create directory structure
 	directories := []string{
@@ -69,11 +73,9 @@ func createHelmChart(clusterName string, taskDefInfos []*TaskDefInfo, outputDir 
 		return fmt.Errorf("failed to create Chart.yaml: %w", err)
 	}
 
-	// Create values.yaml for each task definition
-	for _, taskDefInfo := range taskDefInfos {
-		if err := createValuesYAML(helmChartPath, taskDefInfo); err != nil {
-			return fmt.Errorf("failed to create values.yaml for %s: %w", taskDefInfo.Name, err)
-		}
+	// Create single values.yaml with all task definitions
+	if err := createCombinedValuesYAML(helmChartPath, taskDefInfos); err != nil {
+		return fmt.Errorf("failed to create combined values.yaml: %w", err)
 	}
 
 	// Create Helm template files
@@ -117,66 +119,81 @@ func createChartYAML(chartPath, clusterName string) error {
 	return nil
 }
 
-// createValuesYAML creates the values.yaml file for a task definition
-func createValuesYAML(chartPath string, taskDefInfo *TaskDefInfo) error {
+// createCombinedValuesYAML creates a single values.yaml file with all task definitions
+func createCombinedValuesYAML(chartPath string, taskDefInfos []*TaskDefInfo) error {
 	values := map[string]interface{}{
-		"namespace": "default",
-		"replicas":  1,
+		"defaultNamespace": "default",
+		"defaultReplicas":  1,
 	}
 
-	// Build container configurations
-	var containers []map[string]interface{}
+	// Build configurations for each service
+	services := map[string]interface{}{}
 
-	for _, container := range taskDefInfo.Containers {
-		containerConfig := map[string]interface{}{
-			"name":  container.Name,
-			"image": container.Image,
-			"resources": map[string]interface{}{
-				"limits": map[string]interface{}{
-					"cpu":    container.CPU,
-					"memory": container.Memory,
+	for _, taskDefInfo := range taskDefInfos {
+		serviceName := taskDefInfo.Name
+
+		// Build container configurations for this service
+		var containers []map[string]interface{}
+
+		for _, container := range taskDefInfo.Containers {
+			containerConfig := map[string]interface{}{
+				"name":  container.Name,
+				"image": container.Image,
+				"resources": map[string]interface{}{
+					"limits": map[string]interface{}{
+						"cpu":    container.CPU,
+						"memory": container.Memory,
+					},
+					"requests": map[string]interface{}{
+						"cpu":    container.CPU,
+						"memory": container.Memory,
+					},
 				},
-				"requests": map[string]interface{}{
-					"cpu":    container.CPU,
-					"memory": container.Memory,
-				},
-			},
-		}
-
-		if len(container.Ports) > 0 {
-			containerConfig["ports"] = container.Ports
-		}
-
-		if len(container.EnvVars) > 0 {
-			envList := []map[string]string{}
-			for key, value := range container.EnvVars {
-				envList = append(envList, map[string]string{
-					"name":  key,
-					"value": value,
-				})
 			}
-			containerConfig["env"] = envList
+
+			if len(container.Ports) > 0 {
+				containerConfig["ports"] = container.Ports
+			}
+
+			if len(container.EnvVars) > 0 {
+				envList := []map[string]string{}
+				for key, value := range container.EnvVars {
+					envList = append(envList, map[string]string{
+						"name":  key,
+						"value": value,
+					})
+				}
+				containerConfig["env"] = envList
+			}
+
+			containers = append(containers, containerConfig)
 		}
 
-		containers = append(containers, containerConfig)
-	}
-
-	values["containers"] = containers
-
-	// Add service configuration if there are services
-	if len(taskDefInfo.Manifests.Services) > 0 {
-		svc := taskDefInfo.Manifests.Services[0]
+		// Build service configuration with namespace and replicas
 		serviceConfig := map[string]interface{}{
-			"name": svc.Name,
-			"type": string(svc.Spec.Type),
+			"namespace":  "default",
+			"replicas":   1,
+			"containers": containers,
 		}
 
-		if len(svc.Spec.Ports) > 0 {
-			serviceConfig["port"] = svc.Spec.Ports[0].Port
+		if len(taskDefInfo.Manifests.Services) > 0 {
+			svc := taskDefInfo.Manifests.Services[0]
+			serviceMeta := map[string]interface{}{
+				"name": svc.Name,
+				"type": string(svc.Spec.Type),
+			}
+
+			if len(svc.Spec.Ports) > 0 {
+				serviceMeta["port"] = svc.Spec.Ports[0].Port
+			}
+
+			serviceConfig["service"] = serviceMeta
 		}
 
-		values["service"] = serviceConfig
+		services[serviceName] = serviceConfig
 	}
+
+	values["services"] = services
 
 	// Serialize to YAML with comments
 	data, err := yaml.Marshal(values)
@@ -185,18 +202,14 @@ func createValuesYAML(chartPath string, taskDefInfo *TaskDefInfo) error {
 	}
 
 	// Add header comments
-	header := `# Helm Chart Values for ` + taskDefInfo.Name + `
-# Generated by ecs2k8s
+	header := `# Helm Chart Values - Generated by ecs2k8s
 #
-# To customize the deployment, modify the values below:
-# - namespace: Kubernetes namespace for deployment
-# - replicas: Number of pod replicas
-# - containers: Container configurations with image, resources, and environment variables
-# - service: Service configuration for exposing the application
+# This file contains configurations for all services in the cluster.
+# Each service is organized by name with its containers, resources, and service configuration.
 #
 # Example usage:
-#   helm install ` + taskDefInfo.Name + ` ./` + taskDefInfo.Name + ` -f values.yaml
-#   helm upgrade ` + taskDefInfo.Name + ` ./` + taskDefInfo.Name + ` -f values.yaml
+#   helm install my-release ./ -f values.yaml
+#   helm upgrade my-release ./ -f values.yaml
 
 `
 
@@ -207,7 +220,7 @@ func createValuesYAML(chartPath string, taskDefInfo *TaskDefInfo) error {
 		return fmt.Errorf("failed to write values.yaml: %w", err)
 	}
 
-	log.Printf("Created values.yaml at: %s", valuesFile)
+	log.Printf("Created combined values.yaml at: %s", valuesFile)
 	return nil
 }
 
@@ -218,25 +231,30 @@ func CreateHelmChart(clusterName string, taskDefInfos []*TaskDefInfo, outputDir 
 
 // createHelmTemplates creates the Helm template files
 func createHelmTemplates(chartPath string, taskDefInfos []*TaskDefInfo) error {
-	// Create deployment template
-	deploymentTemplate := `apiVersion: apps/v1
+	// Create deployment template - creates deployments for each service
+	deploymentTemplate := `{{- range $serviceName, $serviceConfig := .Values.services }}
+---
+apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "` + filepath.Base(chartPath) + `.fullname" . }}
+  name: {{ $serviceName }}
+  namespace: {{ $serviceConfig.namespace | default $.Values.defaultNamespace }}
   labels:
+    app: {{ $serviceName }}
     {{- include "` + filepath.Base(chartPath) + `.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicas }}
+  replicas: {{ $serviceConfig.replicas | default $.Values.defaultReplicas }}
   selector:
     matchLabels:
-      {{- include "` + filepath.Base(chartPath) + `.selectorLabels" . | nindent 6 }}
+      app: {{ $serviceName }}
   template:
     metadata:
       labels:
+        app: {{ $serviceName }}
         {{- include "` + filepath.Base(chartPath) + `.selectorLabels" . | nindent 8 }}
     spec:
       containers:
-      {{- range .Values.containers }}
+      {{- range $serviceConfig.containers }}
       - name: {{ .name }}
         image: {{ .image }}
         imagePullPolicy: IfNotPresent
@@ -249,9 +267,9 @@ spec:
         {{- end }}
         {{- if .env }}
         env:
-        {{- range $key, $value := .env }}
-        - name: {{ $key }}
-          value: "{{ $value }}"
+        {{- range .env }}
+        - name: {{ .name }}
+          value: "{{ .value }}"
         {{- end }}
         {{- end }}
         {{- if .resources }}
@@ -268,6 +286,7 @@ spec:
           {{- end }}
         {{- end }}
       {{- end }}
+{{- end }}
 `
 
 	deploymentFile := filepath.Join(chartPath, "templates", "deployment", "deployment.yaml")
@@ -277,18 +296,22 @@ spec:
 
 	log.Printf("Created deployment template at: %s", deploymentFile)
 
-	// Create service template
-	serviceTemplate := `{{- if .Values.service }}
+	// Create service template - creates services for each service config
+	serviceTemplate := `{{- range $serviceName, $serviceConfig := .Values.services }}
+{{- if $serviceConfig.service }}
+---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "` + filepath.Base(chartPath) + `.fullname" . }}
+  name: {{ $serviceName }}
+  namespace: {{ $serviceConfig.namespace | default $.Values.defaultNamespace }}
   labels:
+    app: {{ $serviceName }}
     {{- include "` + filepath.Base(chartPath) + `.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.service.type | default "ClusterIP" }}
+  type: {{ $serviceConfig.service.type | default "ClusterIP" }}
   ports:
-  {{- range .Values.containers }}
+  {{- range $serviceConfig.containers }}
     {{- if .ports }}
     {{- range .ports }}
     - port: {{ . }}
@@ -298,7 +321,8 @@ spec:
     {{- end }}
   {{- end }}
   selector:
-    {{- include "` + filepath.Base(chartPath) + `.selectorLabels" . | nindent 4 }}
+    app: {{ $serviceName }}
+{{- end }}
 {{- end }}
 `
 
@@ -309,18 +333,25 @@ spec:
 
 	log.Printf("Created service template at: %s", serviceFile)
 
-	// Create ConfigMap template
-	configmapTemplate := `{{- if .Values.environment }}
+	// Create configmap template - creates configmaps for each service
+	configmapTemplate := `{{- range $serviceName, $serviceConfig := .Values.services }}
+{{- range $serviceConfig.containers }}
+{{- if .env }}
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "` + filepath.Base(chartPath) + `.fullname" . }}-config
+  name: {{ $serviceName }}-{{ .name }}-config
+  namespace: {{ $serviceConfig.namespace | default $.Values.defaultNamespace }}
   labels:
+    app: {{ $serviceName }}
     {{- include "` + filepath.Base(chartPath) + `.labels" . | nindent 4 }}
 data:
-  {{- range $key, $value := .Values.environment }}
-  {{ $key }}: "{{ $value }}"
+  {{- range .env }}
+  {{ .name }}: "{{ .value }}"
   {{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
 `
 
@@ -390,6 +421,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 	log.Printf("Created helpers template at: %s", helpersFile)
 
+	return nil
+}
+
+// createValuesYAML is kept for backward compatibility but is no longer used
+func createValuesYAML(chartPath string, taskDefInfo *TaskDefInfo) error {
+	log.Printf("Warning: createValuesYAML is deprecated, use createCombinedValuesYAML instead")
 	return nil
 }
 

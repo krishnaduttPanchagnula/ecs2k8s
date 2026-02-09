@@ -1,6 +1,4 @@
-// converter.go
 package main
-
 import (
 	"fmt"
 	"log"
@@ -22,10 +20,10 @@ type ContainerResources struct {
 }
 
 type K8sManifests struct {
-	Deployment *corev1.PodSpec   `json:"deployment,omitempty"`
-	ConfigMaps []*corev1.ConfigMap `json:"configmaps,omitempty"`
-	Secrets    []*corev1.Secret    `json:"secrets,omitempty"`
-	Services   []*corev1.Service   `json:"services,omitempty"`
+	Deployment *corev1.PodSpec      `json:"deployment,omitempty"`
+	ConfigMaps []*corev1.ConfigMap  `json:"configmaps,omitempty"`
+	Secrets    []*corev1.Secret     `json:"secrets,omitempty"`
+	Services   []*corev1.Service    `json:"services,omitempty"`
 	Containers []ContainerResources `json:"containers,omitempty"`
 }
 
@@ -195,7 +193,7 @@ func createSecret(containerName string, envVars []types.KeyValuePair) *corev1.Se
 		ObjectMeta: metav1.ObjectMeta{
 			Name: fmt.Sprintf("%s-secret", containerName),
 		},
-		Type: corev1.SecretTypeOpaque,
+		Type:       corev1.SecretTypeOpaque,
 		StringData: make(map[string]string),
 	}
 
