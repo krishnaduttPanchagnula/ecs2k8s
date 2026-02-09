@@ -166,7 +166,7 @@ func writeManifests(outputDir, taskDefName string, manifests K8sManifests) error
 	// Services - support multiple containers
 	if len(manifests.Services) > 0 {
 		log.Printf("[DEBUG] Adding %d service manifest(s)", len(manifests.Services))
-		for i, svc := range manifests.Services {
+		for _, svc := range manifests.Services {
 			if svc == nil {
 				continue
 			}

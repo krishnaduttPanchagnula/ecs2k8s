@@ -40,7 +40,7 @@ type ChartYAML struct {
 }
 
 // createHelmChart creates a Helm chart from the task definition
-func createHelmChart(outputDir, clusterName string, taskDefInfos []*TaskDefInfo) error {
+func createHelmChart(clusterName string, taskDefInfos []*TaskDefInfo, outputDir string) error {
 	if !strings.Contains(outputDir, clusterName) {
 		outputDir = filepath.Join(outputDir, clusterName)
 	}
@@ -148,7 +148,14 @@ func createValuesYAML(chartPath string, taskDefInfo *TaskDefInfo) error {
 		}
 
 		if len(container.EnvVars) > 0 {
-			containerConfig["env"] = container.EnvVars
+			envList := []map[string]string{}
+			for key, value := range container.EnvVars {
+				envList = append(envList, map[string]string{
+					"name":  key,
+					"value": value,
+				})
+			}
+			containerConfig["env"] = envList
 		}
 
 		containers = append(containers, containerConfig)
@@ -195,13 +202,18 @@ func createValuesYAML(chartPath string, taskDefInfo *TaskDefInfo) error {
 
 	fullContent := header + string(data)
 
-	valuesFile := filepath.Join(chartPath, fmt.Sprintf("values-%s.yaml", taskDefInfo.Name))
+	valuesFile := filepath.Join(chartPath, "values.yaml")
 	if err := os.WriteFile(valuesFile, []byte(fullContent), 0o644); err != nil {
 		return fmt.Errorf("failed to write values.yaml: %w", err)
 	}
 
 	log.Printf("Created values.yaml at: %s", valuesFile)
 	return nil
+}
+
+// CreateHelmChart is a wrapper for createHelmChart with reordered parameters
+func CreateHelmChart(clusterName string, taskDefInfos []*TaskDefInfo, outputDir string) error {
+	return createHelmChart(clusterName, taskDefInfos, outputDir)
 }
 
 // createHelmTemplates creates the Helm template files

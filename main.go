@@ -243,6 +243,8 @@ func runEcs2K8s(region string, createHelm bool) error {
 			continue
 		}
 
+		taskDefInfo.Manifests = K8sManifests{}
+
 		// Generate K8s manifests
 		manifests, err := convertTaskDefToK8s(taskDef)
 		if err != nil {

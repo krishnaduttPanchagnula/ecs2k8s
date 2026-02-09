@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // ContainerResources tracks resource requirements for a container
@@ -26,6 +27,24 @@ type K8sManifests struct {
 	Secrets    []*corev1.Secret    `json:"secrets,omitempty"`
 	Services   []*corev1.Service   `json:"services,omitempty"`
 	Containers []ContainerResources `json:"containers,omitempty"`
+}
+
+// TaskDefInfo represents a task definition with its converted K8s manifests
+type TaskDefInfo struct {
+	Name       string
+	Image      string
+	Containers []ContainerConfig
+	Manifests  K8sManifests
+}
+
+// ContainerConfig represents configuration for a single container
+type ContainerConfig struct {
+	Name    string
+	Image   string
+	CPU     string
+	Memory  string
+	Ports   []int32
+	EnvVars map[string]string
 }
 
 func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
@@ -66,7 +85,9 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 		envVars := convertEnvVars(container.Environment)
 
 		// Convert resources
-		cpuQty := cpuToQuantity(container.Cpu)
+		// Note: Cpu is int32 (not a pointer), Memory is *int32
+		cpuVal := container.Cpu
+		cpuQty := cpuToQuantity(&cpuVal)
 		memoryQty := memoryToQuantity(container.Memory)
 
 		// Create container spec
@@ -248,7 +269,7 @@ func createService(containerName string, portMappings []types.PortMapping) *core
 
 		servicePorts = append(servicePorts, corev1.ServicePort{
 			Port:       port,
-			TargetPort: intstr(port),
+			TargetPort: *intstrHelper(port),
 			Protocol:   corev1.ProtocolTCP,
 		})
 	}
@@ -353,10 +374,79 @@ func memoryToQuantity(memory *int32) resource.Quantity {
 	return *mib
 }
 
-// intstr is a helper to convert int32 to IntOrString for ServicePort
-func intstr(port int32) *corev1.IntOrString {
-	return &corev1.IntOrString{
-		Type:   corev1.IntstrInt,
+// intstrHelper is a helper to convert int32 to IntOrString for ServicePort
+func intstrHelper(port int32) *intstr.IntOrString {
+	return &intstr.IntOrString{
+		Type:   intstr.Int,
 		IntVal: port,
 	}
+}
+
+// convertTaskDefToInfo converts an ECS task definition to TaskDefInfo
+func convertTaskDefToInfo(taskDef *types.TaskDefinition, taskDefName string) (*TaskDefInfo, error) {
+	if taskDef == nil {
+		return nil, fmt.Errorf("task definition cannot be nil")
+	}
+
+	taskDefInfo := &TaskDefInfo{
+		Name:       taskDefName,
+		Containers: []ContainerConfig{},
+	}
+
+	for _, container := range taskDef.ContainerDefinitions {
+		if container.Name == nil || *container.Name == "" {
+			continue
+		}
+
+		image := ""
+		if container.Image != nil {
+			image = *container.Image
+		}
+
+		cpu := ""
+		if container.Cpu > 0 {
+			cpuVal := container.Cpu
+			cpuQty := cpuToQuantity(&cpuVal)
+			cpu = cpuQty.String()
+		}
+
+		memory := ""
+		if container.Memory != nil && *container.Memory > 0 {
+			memQty := memoryToQuantity(container.Memory)
+			memory = memQty.String()
+		}
+
+		// Extract ports
+		var ports []int32
+		for _, pm := range container.PortMappings {
+			if pm.ContainerPort != nil {
+				ports = append(ports, *pm.ContainerPort)
+			}
+		}
+
+		// Extract environment variables
+		envVars := make(map[string]string)
+		for _, env := range container.Environment {
+			if env.Name != nil && env.Value != nil {
+				envVars[*env.Name] = *env.Value
+			}
+		}
+
+		containerConfig := ContainerConfig{
+			Name:    *container.Name,
+			Image:   image,
+			CPU:     cpu,
+			Memory:  memory,
+			Ports:   ports,
+			EnvVars: envVars,
+		}
+
+		taskDefInfo.Containers = append(taskDefInfo.Containers, containerConfig)
+	}
+
+	if taskDef.ContainerDefinitions[0].Image != nil {
+		taskDefInfo.Image = *taskDef.ContainerDefinitions[0].Image
+	}
+
+	return taskDefInfo, nil
 }
