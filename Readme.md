@@ -124,7 +124,6 @@ golangci-lint run
 ## 🚀 Future Features
 
 - [ ] Multi-container support
-- [ ] EKS context injection
 - [ ] Helm chart generation
 - [ ] `--dry-run` mode
 - [ ] Volume/PVC conversion
