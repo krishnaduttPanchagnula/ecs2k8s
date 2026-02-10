@@ -171,6 +171,62 @@ func serializePodSpec(podSpec *corev1.PodSpec) map[string]interface{} {
 		result["restartPolicy"] = string(podSpec.RestartPolicy)
 	}
 
+	// Add service account name if specified
+	if podSpec.ServiceAccountName != "" {
+		result["serviceAccountName"] = podSpec.ServiceAccountName
+	}
+
+	return result
+}
+
+// serializeServiceAccount converts a ServiceAccount to a map suitable for YAML marshaling
+func serializeServiceAccount(sa *corev1.ServiceAccount) map[string]interface{} {
+	result := map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "ServiceAccount",
+	}
+
+	if sa == nil {
+		return result
+	}
+
+	// Add metadata
+	metadata := map[string]interface{}{
+		"name": sa.Name,
+	}
+
+	if sa.Namespace != "" {
+		metadata["namespace"] = sa.Namespace
+	}
+
+	// Add annotations (including IRSA annotations)
+	if len(sa.Annotations) > 0 {
+		metadata["annotations"] = sa.Annotations
+	}
+
+	// Add labels if present
+	if len(sa.Labels) > 0 {
+		metadata["labels"] = sa.Labels
+	}
+
+	result["metadata"] = metadata
+
+	// Add ImagePullSecrets if present
+	if len(sa.ImagePullSecrets) > 0 {
+		var imagePullSecrets []map[string]string
+		for _, ips := range sa.ImagePullSecrets {
+			imagePullSecrets = append(imagePullSecrets, map[string]string{
+				"name": ips.Name,
+			})
+		}
+		result["imagePullSecrets"] = imagePullSecrets
+	}
+
+	// Add AutomountServiceAccountToken if explicitly set
+	if sa.AutomountServiceAccountToken != nil {
+		result["automountServiceAccountToken"] = *sa.AutomountServiceAccountToken
+	}
+
 	return result
 }
 
@@ -294,6 +350,13 @@ func writeManifests(outputDir, taskDefName string, manifests K8sManifests) error
 				files[fmt.Sprintf("%s-secret-%d.yaml", taskDefName, i)] = secret
 			}
 		}
+	}
+
+	// ServiceAccount - for image pull and IAM role support
+	if manifests.ServiceAccount != nil {
+		log.Printf("[DEBUG] Adding ServiceAccount manifest")
+		saManifest := serializeServiceAccount(manifests.ServiceAccount)
+		files[fmt.Sprintf("%s-serviceaccount.yaml", taskDefName)] = saManifest
 	}
 
 	log.Printf("[DEBUG] Total files to write: %d", len(files))
