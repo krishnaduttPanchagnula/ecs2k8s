@@ -14,10 +14,10 @@ import (
 
 // ServiceAccountConfig holds configuration for creating a ServiceAccount with IRSA
 type ServiceAccountConfig struct {
-	Name           string
-	Namespace      string
-	RoleARN        string
-	Annotations    map[string]string
+	Name        string
+	Namespace   string
+	RoleARN     string
+	Annotations map[string]string
 }
 
 // ContainerResources tracks resource requirements for a container
@@ -29,22 +29,22 @@ type ContainerResources struct {
 }
 
 type K8sManifests struct {
-	Deployment     *corev1.PodSpec       `json:"deployment,omitempty"`
-	ConfigMaps     []*corev1.ConfigMap   `json:"configmaps,omitempty"`
-	Secrets        []*corev1.Secret      `json:"secrets,omitempty"`
-	Services       []*corev1.Service     `json:"services,omitempty"`
+	Deployment     *corev1.PodSpec        `json:"deployment,omitempty"`
+	ConfigMaps     []*corev1.ConfigMap    `json:"configmaps,omitempty"`
+	Secrets        []*corev1.Secret       `json:"secrets,omitempty"`
+	Services       []*corev1.Service      `json:"services,omitempty"`
 	ServiceAccount *corev1.ServiceAccount `json:"serviceaccount,omitempty"`
-	Containers     []ContainerResources  `json:"containers,omitempty"`
+	Containers     []ContainerResources   `json:"containers,omitempty"`
 }
 
 // TaskDefInfo represents a task definition with its converted K8s manifests
 type TaskDefInfo struct {
-	Name            string
-	Image           string
-	Containers      []ContainerConfig
-	Manifests       K8sManifests
+	Name             string
+	Image            string
+	Containers       []ContainerConfig
+	Manifests        K8sManifests
 	ExecutionRoleArn string
-	TaskRoleArn     string
+	TaskRoleArn      string
 }
 
 // ContainerConfig represents configuration for a single container
@@ -461,8 +461,8 @@ func convertTaskDefToInfo(taskDef *types.TaskDefinition, taskDefName string) (*T
 	}
 
 	taskDefInfo := &TaskDefInfo{
-		Name:            taskDefName,
-		Containers:      []ContainerConfig{},
+		Name:             taskDefName,
+		Containers:       []ContainerConfig{},
 		ExecutionRoleArn: "",
 		TaskRoleArn:      "",
 	}

@@ -482,8 +482,8 @@ func TestManifestValidatorValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:   "valid manifest",
-			path:   "/tmp/deployment.yaml",
+			name: "valid manifest",
+			path: "/tmp/deployment.yaml",
 			content: `apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -491,8 +491,8 @@ metadata:
 			wantErr: false,
 		},
 		{
-			name:    "empty path",
-			path:    "",
+			name: "empty path",
+			path: "",
 			content: `apiVersion: v1
 kind: Service`,
 			wantErr: true,

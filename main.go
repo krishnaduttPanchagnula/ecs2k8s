@@ -43,7 +43,7 @@ func main() {
 		Short: "Convert AWS ECS task definitions to Kubernetes manifests",
 		Long: `ecs2k8s converts AWS ECS clusters and task definitions into equivalent
 Kubernetes manifests (Deployment, Service, ConfigMap, Secret) and optionally
-generates a Helm chart for easy deployment and management.`,
+generates a Helm chart or Kustomize structure for easy deployment and management.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			region, _ := cmd.Flags().GetString("region")
 			if region == "" {
@@ -55,13 +55,15 @@ generates a Helm chart for easy deployment and management.`,
 			}
 
 			createHelm, _ := cmd.Flags().GetBool("create-helm")
+			createKustomize, _ := cmd.Flags().GetBool("create-kustomize")
 
-			return runEcs2K8s(region, createHelm)
+			return runEcs2K8s(region, createHelm, createKustomize)
 		},
 	}
 
 	rootCmd.Flags().StringP("region", "r", "", "AWS region (required)")
 	rootCmd.Flags().BoolP("create-helm", "H", false, "Create Helm chart (default: false)")
+	rootCmd.Flags().BoolP("create-kustomize", "K", false, "Create Kustomize structure with base and overlays (default: false)")
 
 	err := rootCmd.MarkFlagRequired("region")
 	if err != nil {
@@ -146,11 +148,12 @@ func createOutputDirectory(outputDir string) error {
 	return nil
 }
 
-func runEcs2K8s(region string, createHelm bool) error {
+func runEcs2K8s(region string, createHelm bool, createKustomize bool) error {
 	ctx := context.Background()
 
 	log.Printf("Loading AWS configuration for region: %s", region)
 	log.Printf("Create Helm chart: %v", createHelm)
+	log.Printf("Create Kustomize structure: %v", createKustomize)
 
 	// Load AWS config
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
@@ -293,6 +296,15 @@ func runEcs2K8s(region string, createHelm bool) error {
 		}
 	}
 
+	// 6. Create Kustomize structure if requested
+	if createKustomize && len(taskDefInfos) > 0 {
+		log.Printf("Creating Kustomize structure for cluster: %s", selectedCluster)
+		if err := CreateKustomizeChart(selectedCluster, taskDefInfos, outputDir); err != nil {
+			log.Printf("Error: Failed to create Kustomize structure: %v", err)
+			return err
+		}
+	}
+
 	// Summary
 	log.Printf("\n")
 	log.Printf("========================================")
@@ -302,7 +314,10 @@ func runEcs2K8s(region string, createHelm bool) error {
 	log.Printf("Failed: %d task definition(s)", failureCount)
 	log.Printf("Output directory: %s", outputDir)
 	if createHelm {
-		log.Printf("Helm chart: %s-helm-chart", selectedCluster)
+		log.Printf("Helm chart: %s/helm/%s", selectedCluster, selectedCluster)
+	}
+	if createKustomize {
+		log.Printf("Kustomize structure: %s/kustomize/%s", selectedCluster, selectedCluster)
 	}
 	log.Printf("========================================\n")
 
