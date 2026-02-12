@@ -1,4 +1,5 @@
 package main
+
 import (
 	"fmt"
 	"log"
@@ -54,6 +55,7 @@ func createHelmChart(clusterName string, taskDefInfos []*TaskDefInfo, outputDir 
 		filepath.Join(helmChartPath, "templates", "service"),
 		filepath.Join(helmChartPath, "templates", "configmap"),
 		filepath.Join(helmChartPath, "templates", "secret"),
+		filepath.Join(helmChartPath, "templates", "serviceaccount"),
 	}
 
 	for _, dir := range directories {
@@ -171,6 +173,23 @@ func createCombinedValuesYAML(chartPath string, taskDefInfos []*TaskDefInfo) err
 			"containers": containers,
 		}
 
+		// Add IAM role ARN if available (for IRSA support)
+		if taskDefInfo.TaskRoleArn != "" {
+			serviceConfig["iamRoleArn"] = taskDefInfo.TaskRoleArn
+			serviceConfig["serviceAccount"] = map[string]interface{}{
+				"annotations": map[string]string{
+					"eks.amazonaws.com/role-arn": taskDefInfo.TaskRoleArn,
+				},
+			}
+		} else if taskDefInfo.ExecutionRoleArn != "" {
+			serviceConfig["iamRoleArn"] = taskDefInfo.ExecutionRoleArn
+			serviceConfig["serviceAccount"] = map[string]interface{}{
+				"annotations": map[string]string{
+					"eks.amazonaws.com/role-arn": taskDefInfo.ExecutionRoleArn,
+				},
+			}
+		}
+
 		if len(taskDefInfo.Manifests.Services) > 0 {
 			svc := taskDefInfo.Manifests.Services[0]
 			serviceMeta := map[string]interface{}{
@@ -248,6 +267,9 @@ spec:
         app: {{ $serviceName }}
         {{- include "` + filepath.Base(chartPath) + `.selectorLabels" . | nindent 8 }}
     spec:
+      {{- if or $serviceConfig.serviceAccount $serviceConfig.iamRoleArn }}
+      serviceAccountName: {{ $serviceName }}-sa
+      {{- end }}
       containers:
       {{- range $serviceConfig.containers }}
       - name: {{ .name }}
@@ -356,6 +378,38 @@ data:
 	}
 
 	log.Printf("Created configmap template at: %s", configmapFile)
+
+	// Create ServiceAccount template for IRSA support
+	serviceAccountTemplate := `{{- range $serviceName, $serviceConfig := .Values.services }}
+{{- if or $serviceConfig.serviceAccount $serviceConfig.iamRoleArn }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $serviceName }}-sa
+  namespace: {{ $serviceConfig.namespace | default $.Values.defaultNamespace }}
+  labels:
+    app: {{ $serviceName }}
+    {{- include "` + filepath.Base(chartPath) + `.labels" . | nindent 4 }}
+  {{- if $serviceConfig.serviceAccount }}
+  {{- if $serviceConfig.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml $serviceConfig.serviceAccount.annotations | nindent 4 }}
+  {{- end }}
+  {{- else if $serviceConfig.iamRoleArn }}
+  annotations:
+    eks.amazonaws.com/role-arn: {{ $serviceConfig.iamRoleArn }}
+  {{- end }}
+{{- end }}
+{{- end }}
+`
+
+	serviceAccountFile := filepath.Join(chartPath, "templates", "serviceaccount", "serviceaccount.yaml")
+	if err := os.WriteFile(serviceAccountFile, []byte(serviceAccountTemplate), 0o644); err != nil {
+		return fmt.Errorf("failed to write serviceaccount template: %w", err)
+	}
+
+	log.Printf("Created serviceaccount template at: %s", serviceAccountFile)
 
 	// Create helpers template
 	helpersTemplate := `{{/*

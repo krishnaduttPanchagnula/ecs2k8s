@@ -1,4 +1,5 @@
 package main
+
 import (
 	"fmt"
 	"log"
@@ -11,6 +12,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+// ServiceAccountConfig holds configuration for creating a ServiceAccount with IRSA
+type ServiceAccountConfig struct {
+	Name        string
+	Namespace   string
+	RoleARN     string
+	Annotations map[string]string
+}
+
 // ContainerResources tracks resource requirements for a container
 type ContainerResources struct {
 	Name   string
@@ -20,19 +29,22 @@ type ContainerResources struct {
 }
 
 type K8sManifests struct {
-	Deployment *corev1.PodSpec      `json:"deployment,omitempty"`
-	ConfigMaps []*corev1.ConfigMap  `json:"configmaps,omitempty"`
-	Secrets    []*corev1.Secret     `json:"secrets,omitempty"`
-	Services   []*corev1.Service    `json:"services,omitempty"`
-	Containers []ContainerResources `json:"containers,omitempty"`
+	Deployment     *corev1.PodSpec        `json:"deployment,omitempty"`
+	ConfigMaps     []*corev1.ConfigMap    `json:"configmaps,omitempty"`
+	Secrets        []*corev1.Secret       `json:"secrets,omitempty"`
+	Services       []*corev1.Service      `json:"services,omitempty"`
+	ServiceAccount *corev1.ServiceAccount `json:"serviceaccount,omitempty"`
+	Containers     []ContainerResources   `json:"containers,omitempty"`
 }
 
 // TaskDefInfo represents a task definition with its converted K8s manifests
 type TaskDefInfo struct {
-	Name       string
-	Image      string
-	Containers []ContainerConfig
-	Manifests  K8sManifests
+	Name             string
+	Image            string
+	Containers       []ContainerConfig
+	Manifests        K8sManifests
+	ExecutionRoleArn string
+	TaskRoleArn      string
 }
 
 // ContainerConfig represents configuration for a single container
@@ -62,6 +74,7 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 	var configMaps []*corev1.ConfigMap
 	var secrets []*corev1.Secret
 	var services []*corev1.Service
+	var serviceAccount *corev1.ServiceAccount
 
 	for i, container := range taskDef.ContainerDefinitions {
 		// Validate required fields
@@ -147,13 +160,82 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 	podSpec := &corev1.PodSpec{
 		Containers: containers,
 	}
+
+	// Create ServiceAccount for image pull and IAM role support
+	if serviceAccount = createServiceAccount("", taskDef.TaskRoleArn, taskDef.ExecutionRoleArn); serviceAccount != nil {
+		// Attach ServiceAccount to PodSpec
+		podSpec.ServiceAccountName = serviceAccount.Name
+	}
+
 	manifests.Deployment = podSpec
 	manifests.ConfigMaps = configMaps
 	manifests.Secrets = secrets
 	manifests.Services = services
+	manifests.ServiceAccount = serviceAccount
 	manifests.Containers = containerResources
 
 	return manifests, nil
+}
+
+// createServiceAccount creates a Kubernetes ServiceAccount with IRSA annotations
+// If taskRoleArn is provided, it's preferred over executionRoleArn
+func createServiceAccount(taskDefName string, taskRoleArn, executionRoleArn *string) *corev1.ServiceAccount {
+	if taskDefName == "" {
+		taskDefName = "default"
+	}
+
+	saName := fmt.Sprintf("%s-sa", taskDefName)
+
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: "default",
+		},
+	}
+
+	// Prefer task role ARN (application permissions) over execution role ARN (ECS task execution permissions)
+	var roleARN string
+	if taskRoleArn != nil && *taskRoleArn != "" {
+		roleARN = *taskRoleArn
+		log.Printf("Info: Using ECS Task Role ARN for ServiceAccount: %s", roleARN)
+	} else if executionRoleArn != nil && *executionRoleArn != "" {
+		roleARN = *executionRoleArn
+		log.Printf("Info: Using ECS Execution Role ARN for ServiceAccount: %s", roleARN)
+	}
+
+	// Only create ServiceAccount if we have a role ARN
+	if roleARN != "" {
+		if sa.Annotations == nil {
+			sa.Annotations = make(map[string]string)
+		}
+		// Add IRSA annotation for EKS to associate IAM role with ServiceAccount
+		sa.Annotations["eks.amazonaws.com/role-arn"] = roleARN
+		log.Printf("✓ Created ServiceAccount %s with IRSA annotation for role: %s", saName, roleARN)
+		return sa
+	}
+
+	log.Printf("Info: No ECS IAM role found for task definition %s, ServiceAccount will not have IRSA annotation", taskDefName)
+	// Return ServiceAccount anyway - it can still be used for basic configuration
+	return sa
+}
+
+// createImagePullSecret creates an image pull secret for private registries (optional helper)
+func createImagePullSecret(secretName, registryURL, username, password, email string) *corev1.Secret {
+	if secretName == "" || registryURL == "" {
+		return nil
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: secretName,
+		},
+		Type: corev1.SecretTypeDockerConfigJson,
+	}
+
+	// Note: In practice, you'd construct a proper .dockerconfigjson here
+	// For now, this is a placeholder
+	log.Printf("Info: Image pull secret creation for %s would require registry credentials", registryURL)
+	return secret
 }
 
 func createConfigMap(containerName string, envVars []types.KeyValuePair) *corev1.ConfigMap {
@@ -379,8 +461,18 @@ func convertTaskDefToInfo(taskDef *types.TaskDefinition, taskDefName string) (*T
 	}
 
 	taskDefInfo := &TaskDefInfo{
-		Name:       taskDefName,
-		Containers: []ContainerConfig{},
+		Name:             taskDefName,
+		Containers:       []ContainerConfig{},
+		ExecutionRoleArn: "",
+		TaskRoleArn:      "",
+	}
+
+	// Capture IAM role ARNs
+	if taskDef.ExecutionRoleArn != nil {
+		taskDefInfo.ExecutionRoleArn = *taskDef.ExecutionRoleArn
+	}
+	if taskDef.TaskRoleArn != nil {
+		taskDefInfo.TaskRoleArn = *taskDef.TaskRoleArn
 	}
 
 	for _, container := range taskDef.ContainerDefinitions {
