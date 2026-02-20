@@ -24,6 +24,35 @@
 
 ### Installation
 
+#### Option 1: Using Homebrew (macOS & Linux)
+
+The easiest way to install on macOS or Linux is using Homebrew:
+
+```bash
+# Add the tap
+brew tap krishnaduttPanchagnula/ecs2k8s
+
+# Install
+brew install ecs2k8s
+
+# Update to latest version
+brew upgrade ecs2k8s
+```
+
+#### Option 2: Using WinGet (Windows)
+
+On Windows, you can install using WinGet package manager:
+
+```powershell
+# Install
+winget install KrishnaDuttPanchagnula.ecs2k8s
+
+# Update to latest version
+winget upgrade KrishnaDuttPanchagnula.ecs2k8s
+```
+
+#### Option 3: Download Binary Directly
+
 Download the latest release for your platform:
 
 ```bash
@@ -50,6 +79,14 @@ sudo mv ecs2k8s /usr/local/bin/
 # Windows (PowerShell)
 Invoke-WebRequest -Uri "https://github.com/krishnaduttPanchagnula/ecs2k8s/releases/download/v1.0.0/ecs2k8s_v1.0.0_windows_amd64.zip" -OutFile "ecs2k8s.zip"
 Expand-Archive -Path ecs2k8s.zip -DestinationPath "C:\Program Files\ecs2k8s"
+```
+
+#### Option 4: Using Go
+
+If you have Go installed, you can install from source:
+
+```bash
+go install github.com/krishnaduttPanchagnula/ecs2k8s@latest
 ```
 
 ### Prerequisites

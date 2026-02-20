@@ -1,0 +1,131 @@
+name: Update WinGet Package
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-winget:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get release information
+        id: release_info
+        run: |
+          VERSION=${{ github.event.release.tag_name }}
+          VERSION=${VERSION#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Calculate checksums
+        id: checksums
+        run: |
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          REPO="krishnaduttPanchagnula/ecs2k8s"
+          echo "Calculating checksums for Windows binaries..."
+          if curl -sL -o /tmp/ecs2k8s_amd64.zip "https://github.com/${REPO}/releases/download/${RELEASE_TAG}/ecs2k8s_${RELEASE_TAG#v}_windows_amd64.zip" 2>/dev/null; then
+            SHA256_AMD64=$(sha256sum /tmp/ecs2k8s_amd64.zip | awk '{print $1}')
+            echo "sha256_amd64=${SHA256_AMD64}" >> $GITHUB_OUTPUT
+          else
+            echo "Warning: Could not download Windows binary"
+            echo "sha256_amd64=0000000000000000000000000000000000000000000000000000000000000000" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate WinGet manifests
+        env:
+          VERSION: ${{ steps.release_info.outputs.version }}
+          SHA256_AMD64: ${{ steps.checksums.outputs.sha256_amd64 }}
+        run: |
+          mkdir -p "winget-manifests/${VERSION}"
+          RELEASE_DATE=$(date -u +'%Y-%m-%d')
+          cat > "winget-manifests/${VERSION}/KrishnaDuttPanchagnula.ecs2k8s.installer.yaml" << 'HEREDOC'
+          # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+          PackageIdentifier: KrishnaDuttPanchagnula.ecs2k8s
+          PackageVersion: VERSION_PLACEHOLDER
+          MinimumOSVersion: 10.0.0.0
+          InstallModes:
+            - silent
+            - silentWithProgress
+          Installers:
+            - Architecture: x64
+              InstallerType: portable
+              InstallerUrl: https://github.com/krishnaduttPanchagnula/ecs2k8s/releases/download/vVERSION_PLACEHOLDER/ecs2k8s_VERSION_PLACEHOLDER_windows_amd64.zip
+              InstallerSha256: SHA256_PLACEHOLDER
+              ReleaseDate: DATE_PLACEHOLDER
+          ManifestType: installer
+          ManifestVersion: 1.6.0
+          HEREDOC
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" "winget-manifests/${VERSION}/KrishnaDuttPanchagnula.ecs2k8s.installer.yaml"
+          sed -i "s/SHA256_PLACEHOLDER/${SHA256_AMD64}/g" "winget-manifests/${VERSION}/KrishnaDuttPanchagnula.ecs2k8s.installer.yaml"
+          sed -i "s/DATE_PLACEHOLDER/${RELEASE_DATE}/g" "winget-manifests/${VERSION}/KrishnaDuttPanchagnula.ecs2k8s.installer.yaml"
+          cat > "winget-manifests/${VERSION}/KrishnaDuttPanchagnula.ecs2k8s.locale.en-US.yaml" << 'HEREDOC'
+          # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+          PackageIdentifier: KrishnaDuttPanchagnula.ecs2k8s
+          PackageVersion: VERSION_PLACEHOLDER
+          PackageLocale: en-US
+          Publisher: Krishna Dutt Panchagnula
+          PublisherUrl: https://github.com/krishnaduttPanchagnula
+          PublisherSupportUrl: https://github.com/krishnaduttPanchagnula/ecs2k8s/issues
+          Author: Krishna Dutt Panchagnula
+          AuthorUrl: https://github.com/krishnaduttPanchagnula
+          PackageName: ecs2k8s
+          PackageUrl: https://github.com/krishnaduttPanchagnula/ecs2k8s
+          License: Apache-2.0
+          LicenseUrl: https://github.com/krishnaduttPanchagnula/ecs2k8s/blob/main/LICENSE
+          Copyright: Copyright (c) Krishna Dutt Panchagnula
+          ShortDescription: AWS ECS to Kubernetes migration tool
+          Description: ecs2k8s is a command-line tool that automates the conversion of AWS ECS task definitions into Kubernetes manifests, enabling seamless migration of containerized applications from ECS to Kubernetes.
+          Tags:
+            - kubernetes
+            - aws
+            - ecs
+            - migration
+            - container
+            - k8s
+            - docker
+          ReleaseNotesUrl: https://github.com/krishnaduttPanchagnula/ecs2k8s/releases/tag/vVERSION_PLACEHOLDER
+          ManifestType: defaultLocale
+          ManifestVersion: 1.6.0
+          HEREDOC
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" "winget-manifests/${VERSION}/KrishnaDuttPanchagnula.ecs2k8s.locale.en-US.yaml"
+          cat > "winget-manifests/${VERSION}/KrishnaDuttPanchagnula.ecs2k8s.yaml" << 'HEREDOC'
+          # yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+          PackageIdentifier: KrishnaDuttPanchagnula.ecs2k8s
+          PackageVersion: VERSION_PLACEHOLDER
+          DefaultLocale: en-US
+          ManifestType: version
+          ManifestVersion: 1.6.0
+          HEREDOC
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" "winget-manifests/${VERSION}/KrishnaDuttPanchagnula.ecs2k8s.yaml"
+          echo "Generated manifests in winget-manifests/${VERSION}"
+
+      - name: Display generated manifests
+        run: |
+          echo "=== Generated WinGet manifests ==="
+          find winget-manifests -type f -exec sh -c 'echo ""; echo "--- {} ---"; cat {}' \;
+
+      - name: Upload manifests as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: winget-manifests-${{ steps.release_info.outputs.version }}
+          path: winget-manifests/
+          retention-days: 30
+
+      - name: Create summary
+        if: always()
+        run: |
+          echo "## WinGet Package Update" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Version: ${{ steps.release_info.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Manifests generated successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download the manifests artifact from this workflow run" >> $GITHUB_STEP_SUMMARY
+          echo "2. Fork https://github.com/microsoft/winget-pkgs if not already done" >> $GITHUB_STEP_SUMMARY
+          echo "3. Create directory: manifests/k/KrishnaDuttPanchagnula/ecs2k8s/${{ steps.release_info.outputs.version }}/" >> $GITHUB_STEP_SUMMARY
+          echo "4. Copy manifest files to that directory" >> $GITHUB_STEP_SUMMARY
+          echo "5. Commit and push to your fork" >> $GITHUB_STEP_SUMMARY
+          echo "6. Submit a pull request to microsoft/winget-pkgs" >> $GITHUB_STEP_SUMMARY
