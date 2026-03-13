@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/spf13/cobra"
 
-	"ecs2eks/validators"
+	"github.com/krishnaduttPanchagnula/ecs2k8s/validators"
 )
 
 // validAWSRegions contains all valid AWS regions
