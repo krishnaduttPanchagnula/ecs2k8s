@@ -64,9 +64,14 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 		return manifests, fmt.Errorf("no container definitions found")
 	}
 
-	// Log info about container count
 	if len(taskDef.ContainerDefinitions) > 1 {
 		log.Printf("Info: Task definition has %d containers, converting all", len(taskDef.ContainerDefinitions))
+	}
+
+	// Extract task definition name for consistent labeling
+	taskDefName := ""
+	if taskDef.TaskDefinitionArn != nil {
+		taskDefName = extractTaskDefName(*taskDef.TaskDefinitionArn)
 	}
 
 	var containers []corev1.Container
@@ -77,7 +82,6 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 	var serviceAccount *corev1.ServiceAccount
 
 	for i, container := range taskDef.ContainerDefinitions {
-		// Validate required fields
 		if container.Name == nil || *container.Name == "" {
 			log.Printf("Warning: Container %d missing Name field, skipping", i)
 			continue
@@ -89,19 +93,13 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 
 		containerName := *container.Name
 
-		// Convert ports
 		ports := convertPorts(container.PortMappings)
-
-		// Convert environment variables
 		envVars := convertEnvVars(container.Environment)
 
-		// Convert resources
-		// Note: Cpu is int32 (not a pointer), Memory is *int32
 		cpuVal := container.Cpu
 		cpuQty := cpuToQuantity(&cpuVal)
 		memoryQty := memoryToQuantity(container.Memory)
 
-		// Create container spec
 		c := corev1.Container{
 			Name:  containerName,
 			Image: *container.Image,
@@ -120,7 +118,6 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 		}
 		containers = append(containers, c)
 
-		// Track container resources for Helm values
 		portList := make([]int32, 0)
 		for _, p := range ports {
 			portList = append(portList, p.ContainerPort)
@@ -134,19 +131,17 @@ func convertTaskDefToK8s(taskDef *types.TaskDefinition) (K8sManifests, error) {
 		}
 		containerResources = append(containerResources, resources)
 
-		// Create ConfigMap for non-sensitive env vars
 		if cm := createConfigMap(containerName, container.Environment); cm != nil {
 			configMaps = append(configMaps, cm)
 		}
 
-		// Create Secret for AWS/sensitive env vars
 		if secret := createSecret(containerName, container.Environment); secret != nil {
 			secrets = append(secrets, secret)
 		}
 
-		// Create Service for this container if it has port mappings
+		// Create Service using task def name as selector to match Deployment labels
 		if len(container.PortMappings) > 0 {
-			if svc := createService(containerName, container.PortMappings); svc != nil {
+			if svc := createService(containerName, taskDefName, container.PortMappings); svc != nil {
 				services = append(services, svc)
 			}
 		}
@@ -217,25 +212,6 @@ func createServiceAccount(taskDefName string, taskRoleArn, executionRoleArn *str
 	log.Printf("Info: No ECS IAM role found for task definition %s, ServiceAccount will not have IRSA annotation", taskDefName)
 	// Return ServiceAccount anyway - it can still be used for basic configuration
 	return sa
-}
-
-// createImagePullSecret creates an image pull secret for private registries (optional helper)
-func createImagePullSecret(secretName, registryURL, username, password, email string) *corev1.Secret {
-	if secretName == "" || registryURL == "" {
-		return nil
-	}
-
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: secretName,
-		},
-		Type: corev1.SecretTypeDockerConfigJson,
-	}
-
-	// Note: In practice, you'd construct a proper .dockerconfigjson here
-	// For now, this is a placeholder
-	log.Printf("Info: Image pull secret creation for %s would require registry credentials", registryURL)
-	return secret
 }
 
 func createConfigMap(containerName string, envVars []types.KeyValuePair) *corev1.ConfigMap {
@@ -322,16 +298,20 @@ func isSecretEnvVar(name string) bool {
 	return false
 }
 
-func createService(containerName string, portMappings []types.PortMapping) *corev1.Service {
+func createService(containerName, taskDefName string, portMappings []types.PortMapping) *corev1.Service {
 	if len(portMappings) == 0 {
 		return nil
 	}
 
-	// Collect all valid ports
-	var servicePorts []corev1.ServicePort
-	var primaryPort int32 = 8080
+	// Use taskDefName for the selector to match Deployment pod labels
+	selectorApp := taskDefName
+	if selectorApp == "" {
+		selectorApp = containerName
+	}
 
-	for i, pm := range portMappings {
+	var servicePorts []corev1.ServicePort
+
+	for _, pm := range portMappings {
 		if pm.ContainerPort == nil {
 			continue
 		}
@@ -340,11 +320,6 @@ func createService(containerName string, portMappings []types.PortMapping) *core
 		if port < 1 || port > 65535 {
 			log.Printf("Warning: Invalid port number %d for container %s, skipping", port, containerName)
 			continue
-		}
-
-		// Use first valid port as primary
-		if i == 0 || primaryPort == 8080 {
-			primaryPort = port
 		}
 
 		servicePorts = append(servicePorts, corev1.ServicePort{
@@ -364,7 +339,7 @@ func createService(containerName string, portMappings []types.PortMapping) *core
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
-				"app": containerName,
+				"app": selectorApp,
 			},
 			Ports: servicePorts,
 			Type:  corev1.ServiceTypeClusterIP,

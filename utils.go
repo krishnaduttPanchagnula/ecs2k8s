@@ -230,13 +230,98 @@ func serializeServiceAccount(sa *corev1.ServiceAccount) map[string]interface{} {
 	return result
 }
 
+// serializeConfigMap converts a ConfigMap to a clean map for YAML marshaling
+func serializeConfigMap(cm *corev1.ConfigMap) map[string]interface{} {
+	result := map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata": map[string]interface{}{
+			"name": cm.Name,
+		},
+	}
+	if cm.Namespace != "" {
+		result["metadata"].(map[string]interface{})["namespace"] = cm.Namespace
+	}
+	if len(cm.Labels) > 0 {
+		result["metadata"].(map[string]interface{})["labels"] = cm.Labels
+	}
+	if len(cm.Data) > 0 {
+		result["data"] = cm.Data
+	}
+	return result
+}
+
+// serializeSecret converts a Secret to a clean map for YAML marshaling
+func serializeSecret(secret *corev1.Secret) map[string]interface{} {
+	result := map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata": map[string]interface{}{
+			"name": secret.Name,
+		},
+		"type": string(secret.Type),
+	}
+	if secret.Namespace != "" {
+		result["metadata"].(map[string]interface{})["namespace"] = secret.Namespace
+	}
+	if len(secret.Labels) > 0 {
+		result["metadata"].(map[string]interface{})["labels"] = secret.Labels
+	}
+	if len(secret.StringData) > 0 {
+		result["stringData"] = secret.StringData
+	}
+	if len(secret.Data) > 0 {
+		result["data"] = secret.Data
+	}
+	return result
+}
+
+// serializeService converts a Service to a clean map for YAML marshaling
+func serializeService(svc *corev1.Service) map[string]interface{} {
+	result := map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "Service",
+		"metadata": map[string]interface{}{
+			"name": svc.Name,
+		},
+	}
+	if svc.Namespace != "" {
+		result["metadata"].(map[string]interface{})["namespace"] = svc.Namespace
+	}
+	if len(svc.Labels) > 0 {
+		result["metadata"].(map[string]interface{})["labels"] = svc.Labels
+	}
+
+	spec := map[string]interface{}{
+		"type":     string(svc.Spec.Type),
+		"selector": svc.Spec.Selector,
+	}
+
+	if len(svc.Spec.Ports) > 0 {
+		var ports []map[string]interface{}
+		for _, p := range svc.Spec.Ports {
+			portMap := map[string]interface{}{
+				"port":       p.Port,
+				"targetPort": p.TargetPort.IntValue(),
+				"protocol":   string(p.Protocol),
+			}
+			if p.Name != "" {
+				portMap["name"] = p.Name
+			}
+			ports = append(ports, portMap)
+		}
+		spec["ports"] = ports
+	}
+
+	result["spec"] = spec
+	return result
+}
+
 func writeManifests(outputDir, taskDefName string, manifests K8sManifests) error {
-	// Validate directory path
 	if outputDir == "" {
 		return fmt.Errorf("output directory path cannot be empty")
 	}
 
-	// Check directory exists and is a directory
 	info, err := os.Stat(outputDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -249,17 +334,6 @@ func writeManifests(outputDir, taskDefName string, manifests K8sManifests) error
 		return fmt.Errorf("output path %s is not a directory", outputDir)
 	}
 
-	// Check directory is writable by attempting to write a test file
-	testFile := filepath.Join(outputDir, ".write_test")
-	if err := os.WriteFile(testFile, []byte("test"), 0o644); err != nil {
-		return fmt.Errorf("output directory %s is not writable: %w", outputDir, err)
-	}
-	// Clean up test file
-	if err := os.Remove(testFile); err != nil {
-		log.Printf("Warning: Failed to remove test file %s: %v", testFile, err)
-	}
-
-	// Validate task definition name for filename safety
 	if taskDefName == "" {
 		return fmt.Errorf("task definition name cannot be empty")
 	}
@@ -270,17 +344,17 @@ func writeManifests(outputDir, taskDefName string, manifests K8sManifests) error
 
 	files := map[string]interface{}{}
 
-	log.Printf("[DEBUG] writeManifests called for task: %s", taskDefName)
-
 	// Deployment
 	if manifests.Deployment != nil {
-		log.Printf("[DEBUG] Adding deployment manifest")
 		deployment := map[string]interface{}{
 			"apiVersion": "apps/v1",
 			"kind":       "Deployment",
 			"metadata": map[string]interface{}{
 				"name":      taskDefName,
 				"namespace": "default",
+				"labels": map[string]string{
+					"app": taskDefName,
+				},
 			},
 			"spec": map[string]interface{}{
 				"replicas": 1,
@@ -300,72 +374,55 @@ func writeManifests(outputDir, taskDefName string, manifests K8sManifests) error
 			},
 		}
 		files[fmt.Sprintf("%s-deployment.yaml", taskDefName)] = deployment
-	} else {
-		log.Printf("[DEBUG] Deployment is nil!")
 	}
 
-	// ConfigMaps - support multiple containers
-	if len(manifests.ConfigMaps) > 0 {
-		log.Printf("[DEBUG] Adding %d configmap manifest(s)", len(manifests.ConfigMaps))
-		for i, cm := range manifests.ConfigMaps {
-			if cm == nil {
-				continue
-			}
-			if len(manifests.ConfigMaps) == 1 {
-				files[fmt.Sprintf("%s-configmap.yaml", taskDefName)] = cm
-			} else {
-				// For multiple containers, create separate configmaps with container name
-				files[fmt.Sprintf("%s-configmap-%d.yaml", taskDefName, i)] = cm
-			}
+	// ConfigMaps
+	for i, cm := range manifests.ConfigMaps {
+		if cm == nil {
+			continue
+		}
+		cmMap := serializeConfigMap(cm)
+		if len(manifests.ConfigMaps) == 1 {
+			files[fmt.Sprintf("%s-configmap.yaml", taskDefName)] = cmMap
+		} else {
+			files[fmt.Sprintf("%s-configmap-%d.yaml", taskDefName, i)] = cmMap
 		}
 	}
 
-	// Services - support multiple containers
-	if len(manifests.Services) > 0 {
-		log.Printf("[DEBUG] Adding %d service manifest(s)", len(manifests.Services))
-		for _, svc := range manifests.Services {
-			if svc == nil {
-				continue
-			}
-			if len(manifests.Services) == 1 {
-				files[fmt.Sprintf("%s-service.yaml", taskDefName)] = svc
-			} else {
-				// For multiple containers, create separate services with container name
-				files[fmt.Sprintf("%s-service-%s.yaml", taskDefName, svc.Name)] = svc
-			}
+	// Services
+	for _, svc := range manifests.Services {
+		if svc == nil {
+			continue
+		}
+		svcMap := serializeService(svc)
+		if len(manifests.Services) == 1 {
+			files[fmt.Sprintf("%s-service.yaml", taskDefName)] = svcMap
+		} else {
+			files[fmt.Sprintf("%s-service-%s.yaml", taskDefName, svc.Name)] = svcMap
 		}
 	}
 
-	// Secrets - support multiple containers
-	if len(manifests.Secrets) > 0 {
-		log.Printf("[DEBUG] Adding %d secret manifest(s)", len(manifests.Secrets))
-		for i, secret := range manifests.Secrets {
-			if secret == nil {
-				continue
-			}
-			if len(manifests.Secrets) == 1 {
-				files[fmt.Sprintf("%s-secret.yaml", taskDefName)] = secret
-			} else {
-				// For multiple containers, create separate secrets with container name
-				files[fmt.Sprintf("%s-secret-%d.yaml", taskDefName, i)] = secret
-			}
+	// Secrets
+	for i, secret := range manifests.Secrets {
+		if secret == nil {
+			continue
+		}
+		secretMap := serializeSecret(secret)
+		if len(manifests.Secrets) == 1 {
+			files[fmt.Sprintf("%s-secret.yaml", taskDefName)] = secretMap
+		} else {
+			files[fmt.Sprintf("%s-secret-%d.yaml", taskDefName, i)] = secretMap
 		}
 	}
 
-	// ServiceAccount - for image pull and IAM role support
+	// ServiceAccount
 	if manifests.ServiceAccount != nil {
-		log.Printf("[DEBUG] Adding ServiceAccount manifest")
 		saManifest := serializeServiceAccount(manifests.ServiceAccount)
 		files[fmt.Sprintf("%s-serviceaccount.yaml", taskDefName)] = saManifest
 	}
 
-	log.Printf("[DEBUG] Total files to write: %d", len(files))
-
 	// Write files
 	for filename, content := range files {
-		log.Printf("[DEBUG] Writing file: %s", filename)
-
-		// Additional validation of constructed filename
 		if !isValidFilename(filename) {
 			return fmt.Errorf("constructed filename %s contains invalid characters", filename)
 		}
@@ -377,7 +434,7 @@ func writeManifests(outputDir, taskDefName string, manifests K8sManifests) error
 
 		filePath := filepath.Join(outputDir, filename)
 
-		// Prevent directory traversal attacks
+		// Prevent directory traversal
 		absFilePath, err := filepath.Abs(filePath)
 		if err != nil {
 			return fmt.Errorf("failed to resolve absolute path for %s: %w", filePath, err)
@@ -396,7 +453,7 @@ func writeManifests(outputDir, taskDefName string, manifests K8sManifests) error
 			return fmt.Errorf("failed to write file %s: %w", filePath, err)
 		}
 
-		log.Printf("[DEBUG] Successfully wrote: %s", filePath)
+		log.Printf("Wrote: %s", filePath)
 	}
 
 	return nil

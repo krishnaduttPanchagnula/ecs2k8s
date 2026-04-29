@@ -119,8 +119,9 @@ func createBaseKustomization(basePath string, taskDefInfos []*TaskDefInfo) error
 		// Write services
 		if len(taskDefInfo.Manifests.Services) > 0 {
 			for i, svc := range taskDefInfo.Manifests.Services {
+				svcMap := serializeService(svc)
 				serviceFile := filepath.Join(basePath, "services", fmt.Sprintf("%s-service.yaml", svc.Name))
-				if data, err := yaml.Marshal(svc); err == nil {
+				if data, err := yaml.Marshal(svcMap); err == nil {
 					if err := os.WriteFile(serviceFile, data, 0o644); err != nil {
 						log.Printf("Warning: Failed to write service %s: %v", serviceFile, err)
 					} else {
@@ -138,8 +139,9 @@ func createBaseKustomization(basePath string, taskDefInfos []*TaskDefInfo) error
 				if cm == nil {
 					continue
 				}
+				cmMap := serializeConfigMap(cm)
 				configmapFile := filepath.Join(basePath, "configmaps", fmt.Sprintf("%s-configmap-%d.yaml", taskName, i))
-				if data, err := yaml.Marshal(cm); err == nil {
+				if data, err := yaml.Marshal(cmMap); err == nil {
 					if err := os.WriteFile(configmapFile, data, 0o644); err != nil {
 						log.Printf("Warning: Failed to write configmap %s: %v", configmapFile, err)
 					} else {
@@ -155,8 +157,9 @@ func createBaseKustomization(basePath string, taskDefInfos []*TaskDefInfo) error
 				if secret == nil {
 					continue
 				}
+				secretMap := serializeSecret(secret)
 				secretFile := filepath.Join(basePath, "secrets", fmt.Sprintf("%s-secret-%d.yaml", taskName, i))
-				if data, err := yaml.Marshal(secret); err == nil {
+				if data, err := yaml.Marshal(secretMap); err == nil {
 					if err := os.WriteFile(secretFile, data, 0o644); err != nil {
 						log.Printf("Warning: Failed to write secret %s: %v", secretFile, err)
 					} else {
@@ -168,8 +171,9 @@ func createBaseKustomization(basePath string, taskDefInfos []*TaskDefInfo) error
 
 		// Write service accounts
 		if taskDefInfo.Manifests.ServiceAccount != nil {
+			saMap := serializeServiceAccount(taskDefInfo.Manifests.ServiceAccount)
 			serviceAccountFile := filepath.Join(basePath, "serviceaccounts", fmt.Sprintf("%s-serviceaccount.yaml", taskName))
-			if data, err := yaml.Marshal(taskDefInfo.Manifests.ServiceAccount); err == nil {
+			if data, err := yaml.Marshal(saMap); err == nil {
 				if err := os.WriteFile(serviceAccountFile, data, 0o644); err != nil {
 					log.Printf("Warning: Failed to write serviceaccount %s: %v", serviceAccountFile, err)
 				} else {
@@ -254,7 +258,7 @@ spec:
 		Metadata: map[string]interface{}{
 			"name": overlayName,
 		},
-		Bases:     []string{"../../base"},
+		Resources: []string{"../../base"},
 		Namespace: namespace,
 		Patches:   patches,
 		CommonLabels: map[string]string{

@@ -9,33 +9,11 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/spf13/cobra"
 
 	"github.com/krishnaduttPanchagnula/ecs2k8s/validators"
 )
-
-// validAWSRegions contains all valid AWS regions
-var validAWSRegions = map[string]bool{
-	"us-east-1":      true,
-	"us-east-2":      true,
-	"us-west-1":      true,
-	"us-west-2":      true,
-	"eu-west-1":      true,
-	"eu-west-2":      true,
-	"eu-west-3":      true,
-	"eu-central-1":   true,
-	"eu-north-1":     true,
-	"ap-south-1":     true,
-	"ap-southeast-1": true,
-	"ap-southeast-2": true,
-	"ap-northeast-1": true,
-	"ap-northeast-2": true,
-	"ap-northeast-3": true,
-	"ca-central-1":   true,
-	"sa-east-1":      true,
-}
 
 func main() {
 	rootCmd := &cobra.Command{
@@ -90,12 +68,6 @@ func validateRegion(region string) error {
 	}
 
 	return nil
-}
-
-// validateRegionWithAWS checks region with AWS API
-func validateRegionWithAWS(ctx context.Context, region string, ec2Client *ec2.Client) error {
-	rv := &validators.RegionValidator{Region: region}
-	return rv.ValidateWithAWS(ctx, ec2Client)
 }
 
 // validateAWSCredentials attempts to verify AWS credentials are configured
@@ -377,13 +349,4 @@ func validateTaskDefArn(ctx context.Context, taskDefArn string, ecsClient *ecs.C
 	}
 
 	return nil
-}
-
-// validateManifest validates generated Kubernetes manifest using validators package
-func validateManifest(manifestPath string, content []byte) error {
-	mv := &validators.ManifestValidator{
-		ManifestPath: manifestPath,
-		Content:      content,
-	}
-	return mv.Validate()
 }

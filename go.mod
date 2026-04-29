@@ -1,4 +1,4 @@
-module https: //github.com/krishnaduttPanchagnula/ecs2k8s
+module github.com/krishnaduttPanchagnula/ecs2k8s
 
 go 1.25.6
 
